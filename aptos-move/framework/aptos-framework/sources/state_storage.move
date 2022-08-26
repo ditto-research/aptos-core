@@ -59,6 +59,33 @@ module aptos_framework::state_storage {
         });
     }
 
+    #[test_only]
+    public fun initialize_for_test(aptos_framework: &signer) {
+        system_addresses::assert_aptos_framework(aptos_framework);
+        assert!(
+            !exists<StateStorageUsage>(@aptos_framework),
+            error::already_exists(ESTATE_STORAGE_USAGE)
+        );
+        assert!(
+            !exists<GasParameter>(@aptos_framework),
+            error::already_exists(EGAS_PARAMETER)
+        );
+        move_to(aptos_framework, StateStorageUsage {
+            epoch: 0,
+            usage: Usage {
+                items: 0,
+                bytes: 0,
+            }
+        });
+        move_to(aptos_framework, GasParameter {
+            usage: Usage {
+                items: 0,
+                bytes: 0,
+            }
+        });
+    }
+
+
     public(friend) fun on_new_block(epoch: u64) acquires StateStorageUsage {
         let usage = borrow_global_mut<StateStorageUsage>(@aptos_framework);
         if (epoch != usage.epoch) {

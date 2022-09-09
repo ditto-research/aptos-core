@@ -84,7 +84,7 @@ module aptos_framework::reconfiguration {
         DisableReconfiguration {} = move_from<DisableReconfiguration>(signer::address_of(aptos_framework));
     }
 
-    fun reconfiguration_enabled(): bool {
+    public fun reconfiguration_enabled(): bool {
         !exists<DisableReconfiguration>(@aptos_framework)
     }
 

@@ -192,6 +192,11 @@ module aptos_framework::genesis {
     }
 
     #[test_only]
+    public fun test_set_genesis_end(aptos_framework: &signer) {
+        chain_status::set_genesis_end(aptos_framework);
+    }
+
+    #[test_only]
     public fun setup() {
         initialize(
             x"00", // empty gas schedule

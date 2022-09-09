@@ -16,7 +16,7 @@ pub const TARGET_SNAPSHOT_SIZE: usize = 100_000;
 /// Port selected RocksDB options for tuning underlying rocksdb instance of AptosDB.
 /// see <https://github.com/facebook/rocksdb/blob/master/include/rocksdb/options.h>
 /// for detailed explanations.
-#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct RocksdbConfig {
     pub max_open_files: i32,
     pub max_total_wal_size: u64,
@@ -47,7 +47,7 @@ impl Default for RocksdbConfig {
     }
 }
 
-#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RocksdbConfigs {
     pub ledger_db_config: RocksdbConfig,
@@ -68,10 +68,9 @@ impl Default for RocksdbConfigs {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct StorageConfig {
-    pub address: SocketAddr,
     pub backup_service_address: SocketAddr,
     pub dir: PathBuf,
     pub storage_pruner_config: PrunerConfig,
@@ -220,7 +219,6 @@ impl Default for EpochSnapshotPrunerConfig {
 impl Default for StorageConfig {
     fn default() -> StorageConfig {
         StorageConfig {
-            address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 6666),
             backup_service_address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 6186),
             dir: PathBuf::from("db"),
             // The prune window must at least out live a RPC request because its sub requests are
@@ -253,8 +251,22 @@ impl StorageConfig {
     }
 
     pub fn randomize_ports(&mut self) {
-        self.address.set_port(utils::get_available_port());
         self.backup_service_address
             .set_port(utils::get_available_port());
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::config::PrunerConfig;
+
+    #[test]
+    pub fn tset_default_prune_window() {
+        // Not that these can't be changed, but think twice -- make them safe for mainnet
+
+        let config = PrunerConfig::default();
+        assert!(config.ledger_pruner_config.prune_window >= 50_000_000);
+        assert!(config.state_merkle_pruner_config.prune_window >= 100_000);
+        assert!(config.epoch_snapshot_pruner_config.prune_window > 50_000_000);
     }
 }

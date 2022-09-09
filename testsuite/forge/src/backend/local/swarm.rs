@@ -81,7 +81,7 @@ impl AsRef<Path> for SwarmDirectory {
 
 #[derive(Debug)]
 pub struct LocalSwarm {
-    node_name_counter: u64,
+    node_name_counter: usize,
     genesis: Transaction,
     genesis_waypoint: Waypoint,
     versions: Arc<HashMap<Version, LocalVersion>>,
@@ -169,8 +169,13 @@ impl LocalSwarm {
         let mut validators = validators
             .into_iter()
             .map(|v| {
-                let node =
-                    LocalNode::new(version.to_owned(), v.name, v.dir, v.account_private_key)?;
+                let node = LocalNode::new(
+                    version.to_owned(),
+                    v.name,
+                    v.index,
+                    v.dir,
+                    v.account_private_key,
+                )?;
                 Ok((node.peer_id(), node))
             })
             .collect::<Result<HashMap<_, _>>>()?;
@@ -201,6 +206,14 @@ impl LocalSwarm {
                 Ok((validator.peer_id(), public_network))
             })
             .collect::<Result<HashMap<_, _>>>()?;
+
+        // We print out the root key to make it easy for users to deploy a local faucet
+        let encoded_root_key = hex::encode(&root_key.to_bytes());
+        info!(
+            "The root (or mint) key for the swarm is: 0x{}",
+            encoded_root_key
+        );
+
         let root_key = ConfigKey::new(root_key);
         let root_account = LocalAccount::new(
             aptos_sdk::types::account_config::aptos_test_root_address(),
@@ -209,7 +222,7 @@ impl LocalSwarm {
         );
 
         Ok(LocalSwarm {
-            node_name_counter: validators.len() as u64,
+            node_name_counter: validators.len(),
             genesis,
             genesis_waypoint,
             versions,
@@ -316,6 +329,7 @@ impl LocalSwarm {
         }
 
         let name = self.node_name_counter.to_string();
+        let index = self.node_name_counter;
         self.node_name_counter += 1;
         let fullnode_config = FullnodeNodeConfig::validator_fullnode(
             name,
@@ -331,6 +345,7 @@ impl LocalSwarm {
         let mut fullnode = LocalNode::new(
             version.to_owned(),
             fullnode_config.name,
+            index,
             fullnode_config.dir,
             None,
         )?;
@@ -346,6 +361,7 @@ impl LocalSwarm {
 
     fn add_fullnode(&mut self, version: &Version, template: NodeConfig) -> Result<PeerId> {
         let name = self.node_name_counter.to_string();
+        let index = self.node_name_counter;
         self.node_name_counter += 1;
         let fullnode_config = FullnodeNodeConfig::public_fullnode(
             name,
@@ -359,6 +375,7 @@ impl LocalSwarm {
         let mut fullnode = LocalNode::new(
             version.to_owned(),
             fullnode_config.name,
+            index,
             fullnode_config.dir,
             None,
         )?;
@@ -390,14 +407,14 @@ impl LocalSwarm {
     pub fn validators(&self) -> impl Iterator<Item = &LocalNode> {
         // sort by id to keep the order consistent:
         let mut validators: Vec<&LocalNode> = self.validators.values().collect();
-        validators.sort_by_key(|v| v.name().parse::<i32>().unwrap());
+        validators.sort_by_key(|v| v.index());
         validators.into_iter()
     }
 
     pub fn validators_mut(&mut self) -> impl Iterator<Item = &mut LocalNode> {
         // sort by id to keep the order consistent:
         let mut validators: Vec<&mut LocalNode> = self.validators.values_mut().collect();
-        validators.sort_by_key(|v| v.name().parse::<i32>().unwrap());
+        validators.sort_by_key(|v| v.index());
         validators.into_iter()
     }
 
@@ -430,15 +447,23 @@ impl Swarm for LocalSwarm {
     }
 
     fn validators<'a>(&'a self) -> Box<dyn Iterator<Item = &'a dyn Validator> + 'a> {
-        Box::new(self.validators.values().map(|v| v as &'a dyn Validator))
+        let mut validators: Vec<_> = self
+            .validators
+            .values()
+            .map(|v| v as &'a dyn Validator)
+            .collect();
+        validators.sort_by_key(|v| v.index());
+        Box::new(validators.into_iter())
     }
 
     fn validators_mut<'a>(&'a mut self) -> Box<dyn Iterator<Item = &'a mut dyn Validator> + 'a> {
-        Box::new(
-            self.validators
-                .values_mut()
-                .map(|v| v as &'a mut dyn Validator),
-        )
+        let mut validators: Vec<_> = self
+            .validators
+            .values_mut()
+            .map(|v| v as &'a mut dyn Validator)
+            .collect();
+        validators.sort_by_key(|v| v.index());
+        Box::new(validators.into_iter())
     }
 
     fn validator(&self, id: PeerId) -> Option<&dyn Validator> {
@@ -542,11 +567,11 @@ impl Swarm for LocalSwarm {
         todo!()
     }
 
-    async fn ensure_no_validator_restart(&mut self) -> Result<()> {
+    async fn ensure_no_validator_restart(&self) -> Result<()> {
         todo!()
     }
 
-    async fn ensure_no_fullnode_restart(&mut self) -> Result<()> {
+    async fn ensure_no_fullnode_restart(&self) -> Result<()> {
         todo!()
     }
 

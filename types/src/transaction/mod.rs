@@ -414,10 +414,10 @@ pub struct SignedTransaction {
     /// Public key and signature to authenticate
     authenticator: TransactionAuthenticator,
 
-    /// A cached serialization of the raw transaction bytes.
-    /// Prevents serializing the same transaction multiple times.
+    /// A cached size of the raw transaction bytes.
+    /// Prevents serializing the same transaction multiple times to determine size.
     #[serde(skip)]
-    bytes: OnceCell<Vec<u8>>,
+    size: OnceCell<usize>,
 }
 
 /// PartialEq ignores the "bytes" field as this is a OnceCell that may or
@@ -477,7 +477,7 @@ impl SignedTransaction {
         SignedTransaction {
             raw_txn,
             authenticator,
-            bytes: OnceCell::new(),
+            size: OnceCell::new(),
         }
     }
 
@@ -490,7 +490,7 @@ impl SignedTransaction {
         SignedTransaction {
             raw_txn,
             authenticator,
-            bytes: OnceCell::new(),
+            size: OnceCell::new(),
         }
     }
 
@@ -507,7 +507,7 @@ impl SignedTransaction {
                 secondary_signer_addresses,
                 secondary_signers,
             ),
-            bytes: OnceCell::new(),
+            size: OnceCell::new(),
         }
     }
 
@@ -518,7 +518,7 @@ impl SignedTransaction {
         Self {
             raw_txn,
             authenticator,
-            bytes: OnceCell::new(),
+            size: OnceCell::new(),
         }
     }
 
@@ -559,11 +559,11 @@ impl SignedTransaction {
     }
 
     pub fn raw_txn_bytes_len(&self) -> usize {
-        self.bytes
-            .get_or_init(|| {
-                bcs::to_bytes(&self.raw_txn).expect("Unable to serialize RawTransaction")
-            })
-            .len()
+        *self.size.get_or_init(|| {
+            bcs::to_bytes(&self.raw_txn)
+                .expect("Unable to serialize RawTransaction")
+                .len()
+        })
     }
 
     /// Checks that the signature of given transaction. Returns `Ok(SignatureCheckedTransaction)` if
@@ -1414,13 +1414,6 @@ impl AccountTransactionsWithProof {
         self.0
     }
 
-    // TODO(philiphayes): this will need to change to support CRSNs
-    // (Conflict-Resistant Sequence Numbers)[https://github.com/aptos/dip/blob/main/dips/dip-168.md].
-    //
-    // If we use a separate event stream under each account for sequence numbers,
-    // we'll probably need to always `include_events: true`, find the sequence
-    // number event, and use that to guarantee the response is sequential and
-    // complete.
     /// 1. Verify all transactions are consistent with the given ledger info.
     /// 2. All transactions were sent by `account`.
     /// 3. The transactions are contiguous by sequence number, starting at `start_seq_num`.

@@ -24,6 +24,7 @@
 //! a connection to a full node.  The online ones need a connection to a full node.
 //!
 
+use crate::common::parse_currency;
 use crate::{
     common::{
         check_network, decode_bcs, decode_key, encode_bcs, get_account, handle_request,
@@ -39,10 +40,7 @@ use aptos_crypto::{
 };
 use aptos_logger::debug;
 use aptos_sdk::{
-    move_types::{
-        identifier::Identifier,
-        language_storage::{StructTag, TypeTag},
-    },
+    move_types::language_storage::{StructTag, TypeTag},
     transaction_builder::TransactionFactory,
 };
 use aptos_types::{
@@ -271,10 +269,24 @@ async fn construction_metadata(
             .map_err(|err| ApiError::GasEstimationFailed(Some(err.to_string())))?
             .into_inner();
 
-        let maximum_possible_gas = std::cmp::min(
-            account_balance.coin.value.0 / gas_price_per_unit,
-            MAX_GAS_UNITS_PER_REQUEST,
-        );
+        let maximum_possible_gas =
+            if let InternalOperation::Transfer(ref transfer) = request.options.internal_operation {
+                std::cmp::min(
+                    (account_balance
+                        .coin
+                        .value
+                        .0
+                        .saturating_sub(transfer.amount.0))
+                        / gas_price_per_unit,
+                    MAX_GAS_UNITS_PER_REQUEST,
+                )
+            } else {
+                std::cmp::min(
+                    account_balance.coin.value.0 / gas_price_per_unit,
+                    MAX_GAS_UNITS_PER_REQUEST,
+                )
+            };
+
         let transaction_factory = TransactionFactory::new(server_context.chain_id)
             .with_gas_unit_price(gas_price_per_unit)
             .with_max_gas_amount(maximum_possible_gas);
@@ -325,7 +337,9 @@ async fn construction_metadata(
     };
 
     let suggested_fee = Amount {
-        value: format!("-{}", gas_price_per_unit.saturating_mul(max_gas_amount)),
+        value: gas_price_per_unit
+            .saturating_mul(max_gas_amount)
+            .to_string(),
         currency: native_coin(),
     };
 
@@ -375,34 +389,31 @@ async fn construction_parse(
         TransactionPayload::EntryFunction(inner) => {
             let (module, function_name, type_args, args) = inner.into_inner();
 
-            let module_name = Identifier::from(module.name());
-            if AccountAddress::ONE == *module.address()
-                && coin_module_identifier() == module_name
-                && transfer_function_identifier() == function_name
-            {
-                parse_transfer_operation(sender, &type_args, &args)?
-            } else if AccountAddress::ONE == *module.address()
-                && aptos_account_module_identifier() == module_name
-                && transfer_function_identifier() == function_name
-            {
-                parse_account_transfer_operation(sender, &type_args, &args)?
-            } else if AccountAddress::ONE == *module.address()
-                && aptos_account_module_identifier() == module_name
-                && create_account_function_identifier() == function_name
-            {
-                parse_create_account_operation(sender, &type_args, &args)?
-            } else if AccountAddress::ONE == *module.address()
-                && stake_module_identifier() == module_name
-                && set_operator_function_identifier() == function_name
-            {
-                parse_set_operator_operation(sender, &type_args, &args)?
-            } else {
-                return Err(ApiError::TransactionParseError(Some(format!(
-                    "Unsupported entry function type {:x}::{}::{}",
-                    module.address(),
-                    module_name,
-                    function_name
-                ))));
+            match (
+                *module.address(),
+                module.name().as_str(),
+                function_name.as_str(),
+            ) {
+                (AccountAddress::ONE, COIN_MODULE, TRANSFER_FUNCTION) => {
+                    parse_transfer_operation(sender, &type_args, &args)?
+                }
+                (AccountAddress::ONE, APTOS_ACCOUNT_MODULE, TRANSFER_FUNCTION) => {
+                    parse_account_transfer_operation(sender, &type_args, &args)?
+                }
+                (AccountAddress::ONE, APTOS_ACCOUNT_MODULE, CREATE_ACCOUNT_FUNCTION) => {
+                    parse_create_account_operation(sender, &type_args, &args)?
+                }
+                (AccountAddress::ONE, STAKE_MODULE, SET_OPERATOR_FUNCTION) => {
+                    parse_set_operator_operation(sender, &type_args, &args)?
+                }
+                _ => {
+                    return Err(ApiError::TransactionParseError(Some(format!(
+                        "Unsupported entry function type {:x}::{}::{}",
+                        module.address(),
+                        module.name(),
+                        function_name
+                    ))));
+                }
             }
         }
         payload => {
@@ -457,24 +468,14 @@ fn parse_transfer_operation(
     let mut operations = Vec::new();
 
     // Check coin is the native coin
-    if let Some(TypeTag::Struct(StructTag {
+    let currency = if let Some(TypeTag::Struct(StructTag {
         address,
         module,
         name,
-        type_params,
+        ..
     })) = type_args.first()
     {
-        // Currency must be the native coin for now
-        if *address != AccountAddress::ONE
-            || *module != aptos_coin_module_identifier()
-            || *name != aptos_coin_resource_identifier()
-            || !type_params.is_empty()
-        {
-            return Err(ApiError::TransactionParseError(Some(format!(
-                "Invalid coin for transfer {:x}::{}::{}",
-                address, module, name
-            ))));
-        }
+        parse_currency(*address, module.as_str(), name.as_str())?
     } else {
         return Err(ApiError::TransactionParseError(Some(
             "No coin type in transfer".to_string(),
@@ -483,7 +484,7 @@ fn parse_transfer_operation(
 
     // Retrieve the args for the operations
 
-    let receiver: AccountAddress = if let Some(receiver) = args.get(0) {
+    let receiver: AccountAddress = if let Some(receiver) = args.first() {
         bcs::from_bytes(receiver)?
     } else {
         return Err(ApiError::TransactionParseError(Some(
@@ -498,8 +499,14 @@ fn parse_transfer_operation(
         )));
     };
 
-    operations.push(Operation::withdraw(0, None, sender, native_coin(), amount));
-    operations.push(Operation::deposit(1, None, receiver, native_coin(), amount));
+    operations.push(Operation::withdraw(
+        0,
+        None,
+        sender,
+        currency.clone(),
+        amount,
+    ));
+    operations.push(Operation::deposit(1, None, receiver, currency, amount));
     Ok(operations)
 }
 
@@ -519,7 +526,7 @@ fn parse_account_transfer_operation(
 
     // Retrieve the args for the operations
 
-    let receiver: AccountAddress = if let Some(receiver) = args.get(0) {
+    let receiver: AccountAddress = if let Some(receiver) = args.first() {
         bcs::from_bytes(receiver)?
     } else {
         return Err(ApiError::TransactionParseError(Some(
@@ -607,7 +614,7 @@ async fn construction_payloads(
     let payload = SigningPayload {
         account_identifier: AccountIdentifier::from(sender),
         hex_bytes: signing_message,
-        signature_type: SignatureType::Ed25519,
+        signature_type: Some(SignatureType::Ed25519),
     };
 
     // Transaction is both the unsigned transaction and the payload

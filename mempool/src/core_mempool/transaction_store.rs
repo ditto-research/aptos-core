@@ -22,11 +22,18 @@ use aptos_types::{
     mempool_status::{MempoolStatus, MempoolStatusCode},
     transaction::SignedTransaction,
 };
+use std::mem::size_of;
 use std::{
     collections::HashMap,
     ops::Bound,
     time::{Duration, SystemTime},
 };
+
+/// Estimated per-txn overhead of indexes. Needs to be updated if additional indexes are added.
+pub const TXN_INDEX_ESTIMATED_BYTES: usize = size_of::<crate::core_mempool::index::OrderedQueueKey>() // priority_index
+    + size_of::<crate::core_mempool::index::TTLOrderingKey>() * 2 // expiration_time_index + system_ttl_index
+    + (size_of::<u64>() * 3 + size_of::<AccountAddress>()) // timeline_index
+    + (size_of::<HashValue>() + size_of::<u64>() + size_of::<AccountAddress>()); // hash_index
 
 /// TransactionStore is in-memory storage for all transactions in mempool.
 pub struct TransactionStore {
@@ -52,8 +59,12 @@ pub struct TransactionStore {
     // one valid hash.
     hash_index: HashMap<HashValue, (AccountAddress, u64)>,
 
+    // estimated size in bytes
+    size_bytes: usize,
+
     // configuration
     capacity: usize,
+    capacity_bytes: usize,
     capacity_per_user: usize,
     max_batch_bytes: u64,
 }
@@ -74,8 +85,12 @@ impl TransactionStore {
             parking_lot_index: ParkingLotIndex::new(),
             hash_index: HashMap::new(),
 
+            // estimated size in bytes
+            size_bytes: 0,
+
             // configuration
             capacity: config.capacity,
+            capacity_bytes: config.capacity_bytes,
             capacity_per_user: config.capacity_per_user,
             max_batch_bytes: config.shared_mempool_max_batch_bytes,
         }
@@ -206,7 +221,9 @@ impl TransactionStore {
                     sequence_number.transaction_sequence_number,
                 ),
             );
+            let txn_size_bytes = txn.get_estimated_bytes();
             txns.insert(sequence_number.transaction_sequence_number, txn);
+            self.size_bytes += txn_size_bytes;
             self.track_indices();
         }
         self.process_ready_transactions(&address, sequence_number.account_sequence_number_type);
@@ -238,6 +255,7 @@ impl TransactionStore {
             counters::TRANSACTION_HASH_INDEX_LABEL,
             self.hash_index.len(),
         );
+        counters::core_mempool_index_size(counters::SIZE_BYTES_LABEL, self.size_bytes);
     }
 
     /// Checks if Mempool is full.
@@ -248,9 +266,7 @@ impl TransactionStore {
         txn: &MempoolTransaction,
         curr_sequence_number: u64,
     ) -> bool {
-        if self.system_ttl_index.size() >= self.capacity
-            && self.check_txn_ready(txn, curr_sequence_number)
-        {
+        if self.is_full() && self.check_txn_ready(txn, curr_sequence_number) {
             // try to free some space in Mempool from ParkingLot by evicting a non-ready txn
             if let Some((address, sequence_number)) = self.parking_lot_index.get_poppable() {
                 if let Some(txn) = self
@@ -268,7 +284,11 @@ impl TransactionStore {
                 }
             }
         }
-        self.system_ttl_index.size() >= self.capacity
+        self.is_full()
+    }
+
+    fn is_full(&self) -> bool {
+        self.system_ttl_index.size() >= self.capacity || self.size_bytes >= self.capacity_bytes
     }
 
     /// Check if a transaction would be ready for broadcast in mempool upon insertion (without inserting it).
@@ -298,37 +318,19 @@ impl TransactionStore {
     }
 
     /// Maintains the following invariants:
-    /// - All transactions of a given non-CRSN account that are sequential to the current sequence number
+    /// - All transactions of a given account that are sequential to the current sequence number
     ///   should be included in both the PriorityIndex (ordering for Consensus) and
     ///   TimelineIndex (txns for SharedMempool).
-    /// - All transactions of a given CRSN account that are greater than the account's min_nonce
-    ///   should be included in both the PriorityIndex and TimelineIndex.
     /// - Other txns are considered to be "non-ready" and should be added to ParkingLotIndex.
     fn process_ready_transactions(
         &mut self,
         address: &AccountAddress,
-        crsn_or_seqno: AccountSequenceInfo,
+        sequence_info: AccountSequenceInfo,
     ) {
         if let Some(txns) = self.transactions.get_mut(address) {
-            let mut min_seq = crsn_or_seqno.min_seq();
+            let mut min_seq = sequence_info.min_seq();
 
-            match crsn_or_seqno {
-                AccountSequenceInfo::CRSN { min_nonce, size } => {
-                    for i in min_nonce..size {
-                        if let Some(txn) = txns.get_mut(&i) {
-                            self.priority_index.insert(txn);
-
-                            if txn.timeline_state == TimelineState::NotReady {
-                                self.timeline_index.insert(txn);
-                            }
-
-                            // Remove txn from parking lot after it has been promoted to
-                            // priority_index / timeline_index, i.e., txn status is ready.
-                            self.parking_lot_index.remove(txn);
-                            min_seq = i;
-                        }
-                    }
-                }
+            match sequence_info {
                 AccountSequenceInfo::Sequential(_) => {
                     while let Some(txn) = txns.get_mut(&min_seq) {
                         self.priority_index.insert(txn);
@@ -357,7 +359,7 @@ impl TransactionStore {
             }
             trace!(
                 LogSchema::new(LogEntry::ProcessReadyTxns).account(*address),
-                first_ready_seq_num = crsn_or_seqno.min_seq(),
+                first_ready_seq_num = sequence_info.min_seq(),
                 last_ready_seq_num = min_seq,
                 num_parked_txns = parking_lot_txns,
             );
@@ -428,6 +430,7 @@ impl TransactionStore {
         self.timeline_index.remove(txn);
         self.parking_lot_index.remove(txn);
         self.hash_index.remove(&txn.get_committed_hash());
+        self.size_bytes -= txn.get_estimated_bytes();
         self.track_indices();
     }
 
@@ -537,10 +540,13 @@ impl TransactionStore {
                         Bound::Excluded(next_key.sequence_number)
                     });
                 // mark all following txns as non-ready, i.e. park them
-                for (_, t) in txns.range((park_range_start, park_range_end)) {
+                for (_, t) in txns.range_mut((park_range_start, park_range_end)) {
                     self.parking_lot_index.insert(t);
                     self.priority_index.remove(t);
                     self.timeline_index.remove(t);
+                    if let TimelineState::Ready(_) = t.timeline_state {
+                        t.timeline_state = TimelineState::NotReady;
+                    }
                 }
                 if let Some(txn) = txns.remove(&key.sequence_number) {
                     let is_active = self.priority_index.contains(&txn);

@@ -30,7 +30,7 @@ type Bytes = Vec<u8>;
 ///     pub fn decode(&TransactionPayload) -> Option<EntryFunctionCall> { .. }
 /// }
 /// ```
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "fuzzing", derive(proptest_derive::Arbitrary))]
 #[cfg_attr(feature = "fuzzing", proptest(no_params))]
 pub enum EntryFunctionCall {
@@ -42,6 +42,30 @@ pub enum EntryFunctionCall {
         rotation_capability_sig_bytes: Vec<u8>,
         account_public_key_bytes: Vec<u8>,
         recipient_address: AccountAddress,
+    },
+
+    /// Offers the capability to sign on behalf of account to the account at address recipient_address.
+    AccountOfferSignerCapability {
+        signer_capability_sig_bytes: Vec<u8>,
+        account_scheme: u8,
+        account_public_key_bytes: Vec<u8>,
+        recipient_address: AccountAddress,
+    },
+
+    /// Generic authentication key rotation function that allows the user to rotate their authentication key from any scheme to any scheme.
+    /// To authorize the rotation, a signature by the current private key on a valid RotationProofChallenge (`cap_rotate_key`)
+    /// demonstrates that the user intends to and has the capability to rotate the authentication key. A signature by the new
+    /// private key on a valid RotationProofChallenge (`cap_update_table`) verifies that the user has the capability to update the
+    /// value at key `auth_key` on the `OriginatingAddress` table. `from_scheme` refers to the scheme of the `from_public_key` and
+    /// `to_scheme` refers to the scheme of the `to_public_key`. A scheme of 0 refers to an Ed25519 key and a scheme of 1 refers to
+    /// Multi-Ed25519 keys.
+    AccountRotateAuthenticationKey {
+        from_scheme: u8,
+        from_public_key_bytes: Vec<u8>,
+        to_scheme: u8,
+        to_public_key_bytes: Vec<u8>,
+        cap_rotate_key: Vec<u8>,
+        cap_update_table: Vec<u8>,
     },
 
     /// Rotates the authentication key and records a mapping on chain from the new authentication key to the originating
@@ -157,6 +181,25 @@ pub enum EntryFunctionCall {
         optional_auth_key: Vec<u8>,
     },
 
+    /// Creates a new resource account, transfer the amount of coins from the origin to the resource
+    /// account, and rotates the authentication key to either the optional auth key if it is
+    /// non-empty (though auth keys are 32-bytes) or the source accounts current auth key. Note,
+    /// this function adds additional resource ownership to the resource account and should only be
+    /// used for resource accounts that need access to Coin<AptosCoin>.
+    ResourceAccountCreateResourceAccountAndFund {
+        seed: Vec<u8>,
+        optional_auth_key: Vec<u8>,
+        fund_amount: u64,
+    },
+
+    /// Creates a new resource account, publishes the package under this account transaction under
+    /// this account and leaves the signer cap readily available for pickup.
+    ResourceAccountCreateResourceAccountAndPublishPackage {
+        seed: Vec<u8>,
+        metadata_serialized: Vec<u8>,
+        code: Vec<Vec<u8>>,
+    },
+
     /// Add `amount` of coins from the `account` owning the StakePool.
     StakeAddStake {
         amount: u64,
@@ -258,6 +301,32 @@ impl EntryFunctionCall {
                 account_public_key_bytes,
                 recipient_address,
             ),
+            AccountOfferSignerCapability {
+                signer_capability_sig_bytes,
+                account_scheme,
+                account_public_key_bytes,
+                recipient_address,
+            } => account_offer_signer_capability(
+                signer_capability_sig_bytes,
+                account_scheme,
+                account_public_key_bytes,
+                recipient_address,
+            ),
+            AccountRotateAuthenticationKey {
+                from_scheme,
+                from_public_key_bytes,
+                to_scheme,
+                to_public_key_bytes,
+                cap_rotate_key,
+                cap_update_table,
+            } => account_rotate_authentication_key(
+                from_scheme,
+                from_public_key_bytes,
+                to_scheme,
+                to_public_key_bytes,
+                cap_rotate_key,
+                cap_update_table,
+            ),
             AccountRotateAuthenticationKeyEd25519 {
                 curr_sig_bytes,
                 new_sig_bytes,
@@ -318,6 +387,24 @@ impl EntryFunctionCall {
                 seed,
                 optional_auth_key,
             } => resource_account_create_resource_account(seed, optional_auth_key),
+            ResourceAccountCreateResourceAccountAndFund {
+                seed,
+                optional_auth_key,
+                fund_amount,
+            } => resource_account_create_resource_account_and_fund(
+                seed,
+                optional_auth_key,
+                fund_amount,
+            ),
+            ResourceAccountCreateResourceAccountAndPublishPackage {
+                seed,
+                metadata_serialized,
+                code,
+            } => resource_account_create_resource_account_and_publish_package(
+                seed,
+                metadata_serialized,
+                code,
+            ),
             StakeAddStake { amount } => stake_add_stake(amount),
             StakeIncreaseLockup {} => stake_increase_lockup(),
             StakeInitializeStakeOwner {
@@ -405,6 +492,68 @@ pub fn account_offer_rotation_capability_ed25519(
             bcs::to_bytes(&rotation_capability_sig_bytes).unwrap(),
             bcs::to_bytes(&account_public_key_bytes).unwrap(),
             bcs::to_bytes(&recipient_address).unwrap(),
+        ],
+    ))
+}
+
+/// Offers the capability to sign on behalf of account to the account at address recipient_address.
+pub fn account_offer_signer_capability(
+    signer_capability_sig_bytes: Vec<u8>,
+    account_scheme: u8,
+    account_public_key_bytes: Vec<u8>,
+    recipient_address: AccountAddress,
+) -> TransactionPayload {
+    TransactionPayload::EntryFunction(EntryFunction::new(
+        ModuleId::new(
+            AccountAddress::new([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 1,
+            ]),
+            ident_str!("account").to_owned(),
+        ),
+        ident_str!("offer_signer_capability").to_owned(),
+        vec![],
+        vec![
+            bcs::to_bytes(&signer_capability_sig_bytes).unwrap(),
+            bcs::to_bytes(&account_scheme).unwrap(),
+            bcs::to_bytes(&account_public_key_bytes).unwrap(),
+            bcs::to_bytes(&recipient_address).unwrap(),
+        ],
+    ))
+}
+
+/// Generic authentication key rotation function that allows the user to rotate their authentication key from any scheme to any scheme.
+/// To authorize the rotation, a signature by the current private key on a valid RotationProofChallenge (`cap_rotate_key`)
+/// demonstrates that the user intends to and has the capability to rotate the authentication key. A signature by the new
+/// private key on a valid RotationProofChallenge (`cap_update_table`) verifies that the user has the capability to update the
+/// value at key `auth_key` on the `OriginatingAddress` table. `from_scheme` refers to the scheme of the `from_public_key` and
+/// `to_scheme` refers to the scheme of the `to_public_key`. A scheme of 0 refers to an Ed25519 key and a scheme of 1 refers to
+/// Multi-Ed25519 keys.
+pub fn account_rotate_authentication_key(
+    from_scheme: u8,
+    from_public_key_bytes: Vec<u8>,
+    to_scheme: u8,
+    to_public_key_bytes: Vec<u8>,
+    cap_rotate_key: Vec<u8>,
+    cap_update_table: Vec<u8>,
+) -> TransactionPayload {
+    TransactionPayload::EntryFunction(EntryFunction::new(
+        ModuleId::new(
+            AccountAddress::new([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 1,
+            ]),
+            ident_str!("account").to_owned(),
+        ),
+        ident_str!("rotate_authentication_key").to_owned(),
+        vec![],
+        vec![
+            bcs::to_bytes(&from_scheme).unwrap(),
+            bcs::to_bytes(&from_public_key_bytes).unwrap(),
+            bcs::to_bytes(&to_scheme).unwrap(),
+            bcs::to_bytes(&to_public_key_bytes).unwrap(),
+            bcs::to_bytes(&cap_rotate_key).unwrap(),
+            bcs::to_bytes(&cap_update_table).unwrap(),
         ],
     ))
 }
@@ -740,6 +889,59 @@ pub fn resource_account_create_resource_account(
     ))
 }
 
+/// Creates a new resource account, transfer the amount of coins from the origin to the resource
+/// account, and rotates the authentication key to either the optional auth key if it is
+/// non-empty (though auth keys are 32-bytes) or the source accounts current auth key. Note,
+/// this function adds additional resource ownership to the resource account and should only be
+/// used for resource accounts that need access to Coin<AptosCoin>.
+pub fn resource_account_create_resource_account_and_fund(
+    seed: Vec<u8>,
+    optional_auth_key: Vec<u8>,
+    fund_amount: u64,
+) -> TransactionPayload {
+    TransactionPayload::EntryFunction(EntryFunction::new(
+        ModuleId::new(
+            AccountAddress::new([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 1,
+            ]),
+            ident_str!("resource_account").to_owned(),
+        ),
+        ident_str!("create_resource_account_and_fund").to_owned(),
+        vec![],
+        vec![
+            bcs::to_bytes(&seed).unwrap(),
+            bcs::to_bytes(&optional_auth_key).unwrap(),
+            bcs::to_bytes(&fund_amount).unwrap(),
+        ],
+    ))
+}
+
+/// Creates a new resource account, publishes the package under this account transaction under
+/// this account and leaves the signer cap readily available for pickup.
+pub fn resource_account_create_resource_account_and_publish_package(
+    seed: Vec<u8>,
+    metadata_serialized: Vec<u8>,
+    code: Vec<Vec<u8>>,
+) -> TransactionPayload {
+    TransactionPayload::EntryFunction(EntryFunction::new(
+        ModuleId::new(
+            AccountAddress::new([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 1,
+            ]),
+            ident_str!("resource_account").to_owned(),
+        ),
+        ident_str!("create_resource_account_and_publish_package").to_owned(),
+        vec![],
+        vec![
+            bcs::to_bytes(&seed).unwrap(),
+            bcs::to_bytes(&metadata_serialized).unwrap(),
+            bcs::to_bytes(&code).unwrap(),
+        ],
+    ))
+}
+
 /// Add `amount` of coins from the `account` owning the StakePool.
 pub fn stake_add_stake(amount: u64) -> TransactionPayload {
     TransactionPayload::EntryFunction(EntryFunction::new(
@@ -1022,6 +1224,38 @@ mod decoder {
         }
     }
 
+    pub fn account_offer_signer_capability(
+        payload: &TransactionPayload,
+    ) -> Option<EntryFunctionCall> {
+        if let TransactionPayload::EntryFunction(script) = payload {
+            Some(EntryFunctionCall::AccountOfferSignerCapability {
+                signer_capability_sig_bytes: bcs::from_bytes(script.args().get(0)?).ok()?,
+                account_scheme: bcs::from_bytes(script.args().get(1)?).ok()?,
+                account_public_key_bytes: bcs::from_bytes(script.args().get(2)?).ok()?,
+                recipient_address: bcs::from_bytes(script.args().get(3)?).ok()?,
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn account_rotate_authentication_key(
+        payload: &TransactionPayload,
+    ) -> Option<EntryFunctionCall> {
+        if let TransactionPayload::EntryFunction(script) = payload {
+            Some(EntryFunctionCall::AccountRotateAuthenticationKey {
+                from_scheme: bcs::from_bytes(script.args().get(0)?).ok()?,
+                from_public_key_bytes: bcs::from_bytes(script.args().get(1)?).ok()?,
+                to_scheme: bcs::from_bytes(script.args().get(2)?).ok()?,
+                to_public_key_bytes: bcs::from_bytes(script.args().get(3)?).ok()?,
+                cap_rotate_key: bcs::from_bytes(script.args().get(4)?).ok()?,
+                cap_update_table: bcs::from_bytes(script.args().get(5)?).ok()?,
+            })
+        } else {
+            None
+        }
+    }
+
     pub fn account_rotate_authentication_key_ed25519(
         payload: &TransactionPayload,
     ) -> Option<EntryFunctionCall> {
@@ -1211,6 +1445,38 @@ mod decoder {
         }
     }
 
+    pub fn resource_account_create_resource_account_and_fund(
+        payload: &TransactionPayload,
+    ) -> Option<EntryFunctionCall> {
+        if let TransactionPayload::EntryFunction(script) = payload {
+            Some(
+                EntryFunctionCall::ResourceAccountCreateResourceAccountAndFund {
+                    seed: bcs::from_bytes(script.args().get(0)?).ok()?,
+                    optional_auth_key: bcs::from_bytes(script.args().get(1)?).ok()?,
+                    fund_amount: bcs::from_bytes(script.args().get(2)?).ok()?,
+                },
+            )
+        } else {
+            None
+        }
+    }
+
+    pub fn resource_account_create_resource_account_and_publish_package(
+        payload: &TransactionPayload,
+    ) -> Option<EntryFunctionCall> {
+        if let TransactionPayload::EntryFunction(script) = payload {
+            Some(
+                EntryFunctionCall::ResourceAccountCreateResourceAccountAndPublishPackage {
+                    seed: bcs::from_bytes(script.args().get(0)?).ok()?,
+                    metadata_serialized: bcs::from_bytes(script.args().get(1)?).ok()?,
+                    code: bcs::from_bytes(script.args().get(2)?).ok()?,
+                },
+            )
+        } else {
+            None
+        }
+    }
+
     pub fn stake_add_stake(payload: &TransactionPayload) -> Option<EntryFunctionCall> {
         if let TransactionPayload::EntryFunction(script) = payload {
             Some(EntryFunctionCall::StakeAddStake {
@@ -1378,6 +1644,14 @@ static SCRIPT_FUNCTION_DECODER_MAP: once_cell::sync::Lazy<EntryFunctionDecoderMa
             Box::new(decoder::account_offer_rotation_capability_ed25519),
         );
         map.insert(
+            "account_offer_signer_capability".to_string(),
+            Box::new(decoder::account_offer_signer_capability),
+        );
+        map.insert(
+            "account_rotate_authentication_key".to_string(),
+            Box::new(decoder::account_rotate_authentication_key),
+        );
+        map.insert(
             "account_rotate_authentication_key_ed25519".to_string(),
             Box::new(decoder::account_rotate_authentication_key_ed25519),
         );
@@ -1440,6 +1714,14 @@ static SCRIPT_FUNCTION_DECODER_MAP: once_cell::sync::Lazy<EntryFunctionDecoderMa
         map.insert(
             "resource_account_create_resource_account".to_string(),
             Box::new(decoder::resource_account_create_resource_account),
+        );
+        map.insert(
+            "resource_account_create_resource_account_and_fund".to_string(),
+            Box::new(decoder::resource_account_create_resource_account_and_fund),
+        );
+        map.insert(
+            "resource_account_create_resource_account_and_publish_package".to_string(),
+            Box::new(decoder::resource_account_create_resource_account_and_publish_package),
         );
         map.insert(
             "stake_add_stake".to_string(),

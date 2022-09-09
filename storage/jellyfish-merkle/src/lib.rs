@@ -73,7 +73,7 @@ pub mod iterator;
 mod jellyfish_merkle_test;
 pub mod metrics;
 #[cfg(any(test, feature = "fuzzing"))]
-mod mock_tree_store;
+pub mod mock_tree_store;
 pub mod node_type;
 pub mod restore;
 #[cfg(any(test, feature = "fuzzing"))]
@@ -81,12 +81,13 @@ pub mod test_helper;
 
 use crate::metrics::APTOS_JELLYFISH_LEAF_COUNT;
 use anyhow::{bail, ensure, format_err, Result};
-use aptos_crypto::hash::SPARSE_MERKLE_PLACEHOLDER_HASH;
-use aptos_crypto::{hash::CryptoHash, HashValue};
-use aptos_types::proof::SparseMerkleProofExt;
+use aptos_crypto::{
+    hash::{CryptoHash, SPARSE_MERKLE_PLACEHOLDER_HASH},
+    HashValue,
+};
 use aptos_types::{
     nibble::{nibble_path::NibblePath, Nibble, ROOT_NIBBLE_HEIGHT},
-    proof::{SparseMerkleProof, SparseMerkleRangeProof},
+    proof::{SparseMerkleProof, SparseMerkleProofExt, SparseMerkleRangeProof},
     state_store::{state_key::StateKey, state_value::StateValue},
     transaction::Version,
 };
@@ -111,6 +112,7 @@ const NUM_IO_THREADS: usize = 32;
 pub static IO_POOL: Lazy<ThreadPool> = Lazy::new(|| {
     ThreadPoolBuilder::new()
         .num_threads(NUM_IO_THREADS)
+        .thread_name(|index| format!("jmt-io-{}", index))
         .build()
         .unwrap()
 });
@@ -142,13 +144,6 @@ pub trait TreeReader<K> {
 pub trait TreeWriter<K>: Send + Sync {
     /// Writes a node batch into storage.
     fn write_node_batch(&self, node_batch: &HashMap<NodeKey, Node<K>>) -> Result<()>;
-}
-
-pub trait StateValueWriter<K, V>: Send + Sync {
-    /// Writes a kv batch into storage.
-    fn write_kv_batch(&self, kv_batch: &StateValueBatch<K, Option<V>>) -> Result<()>;
-
-    fn write_usage(&self, version: Version, items: usize, total_bytes: usize) -> Result<()>;
 }
 
 pub trait Key: Clone + Serialize + DeserializeOwned + Send + Sync {
@@ -190,8 +185,6 @@ impl TestKey for StateKey {}
 
 /// Node batch that will be written into db atomically with other batches.
 pub type NodeBatch<K> = HashMap<NodeKey, Node<K>>;
-/// Key-Value batch that will be written into db atomically with other batches.
-pub type StateValueBatch<K, V> = HashMap<(K, Version), V>;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct NodeStats {
@@ -960,7 +953,6 @@ trait NibbleExt {
 impl NibbleExt for HashValue {
     /// Returns the `index`-th nibble.
     fn get_nibble(&self, index: usize) -> Nibble {
-        mirai_annotations::precondition!(index < HashValue::LENGTH);
         Nibble::from(if index % 2 == 0 {
             self[index / 2] >> 4
         } else {

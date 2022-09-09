@@ -4,6 +4,9 @@
 
 import { application } from "./application"
 
+import ClaimNftController from "./claim_nft_controller"
+application.register("claim-nft", ClaimNftController)
+
 import ConnectWalletController from "./connect_wallet_controller"
 application.register("connect-wallet", ConnectWalletController)
 
@@ -12,6 +15,9 @@ application.register("dialog", DialogController)
 
 import HeaderController from "./header_controller"
 application.register("header", HeaderController)
+
+import MintedNftController from "./minted_nft_controller"
+application.register("minted-nft", MintedNftController)
 
 import ProjectImagesController from "./project_images_controller"
 application.register("project-images", ProjectImagesController)
@@ -27,3 +33,6 @@ application.register("shake", ShakeController)
 
 import VisibilityController from "./visibility_controller"
 application.register("visibility", VisibilityController)
+
+import TableRowController from "./table_row_controller"
+application.register("table_row", TableRowController)

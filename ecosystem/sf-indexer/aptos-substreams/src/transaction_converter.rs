@@ -12,10 +12,11 @@ use aptos_protos::{
         account_signature::Signature as AccountSignature,
         signature::{Signature, Type as SignatureType},
         transaction::TransactionType,
+        transaction_payload::Payload::EntryFunctionPayload,
         write_set_change::{Change as ChangeInput, Type as WriteSetChangeType},
-        BlockMetadataTransaction, Ed25519Signature, Event, GenesisTransaction, MoveResource,
-        MoveStructTag, MultiAgentSignature, MultiEd25519Signature, Transaction, TransactionInfo,
-        UserTransaction, UserTransactionRequest,
+        BlockMetadataTransaction, Ed25519Signature, Event, GenesisTransaction, MultiAgentSignature,
+        MultiEd25519Signature, Transaction, TransactionInfo, UserTransaction,
+        UserTransactionRequest,
     },
 };
 
@@ -71,6 +72,17 @@ pub fn get_user_transaction_output(
                 signatures = get_signature_outputs(signature, user_request, info)?;
             }
         }
+        let mut entry_function_id_str = String::default();
+        if let Some(payload) = &user_request.payload {
+            if let Some(EntryFunctionPayload(entry_fn_payload)) = &payload.payload {
+                let entry_function = entry_fn_payload.function.as_ref().unwrap();
+                let module = entry_function.module.as_ref().unwrap();
+                entry_function_id_str = format!(
+                    "{}::{}::{}",
+                    &module.address, &module.name, entry_function.name
+                );
+            }
+        }
         let user_txn_output = UserTransactionOutput {
             version: info.version,
             sender: user_request.sender.clone(),
@@ -82,6 +94,7 @@ pub fn get_user_transaction_output(
             parent_signature_type: signature_type,
             signatures,
             payload: serde_json::to_string(&user_request.payload).unwrap_or_default(),
+            entry_function_id_str,
         };
         Ok(user_txn_output)
     } else {
@@ -111,6 +124,7 @@ pub fn get_events_output(
                 key,
                 sequence_number: event.sequence_number,
                 r#type: serde_json::to_string(&event.r#type).unwrap_or_default(),
+                type_str: event.type_str.clone(),
                 data: event.data.clone(),
             }
         })
@@ -323,30 +337,20 @@ fn get_change_output(change: &ChangeInput, index: u64) -> ChangeOutput {
                 .unwrap_or_default()
                 .abi
                 .unwrap_or_default();
-            let friends = match abi
-                .friends
-                .iter()
-                .map(|module_id| serde_json::to_string(module_id))
-                .collect()
-            {
+            let friends = match abi.friends.iter().map(serde_json::to_string).collect() {
                 Ok(res) => res,
                 _ => Vec::default(),
             };
             let exposed_functions = match abi
                 .exposed_functions
                 .iter()
-                .map(|module_id| serde_json::to_string(module_id))
+                .map(serde_json::to_string)
                 .collect()
             {
                 Ok(res) => res,
                 _ => Vec::default(),
             };
-            let structs = match abi
-                .structs
-                .iter()
-                .map(|module_id| serde_json::to_string(module_id))
-                .collect()
-            {
+            let structs = match abi.structs.iter().map(serde_json::to_string).collect() {
                 Ok(res) => res,
                 _ => Vec::default(),
             };
@@ -363,29 +367,35 @@ fn get_change_output(change: &ChangeInput, index: u64) -> ChangeOutput {
         }
         ChangeInput::DeleteResource(item) => ChangeOutput::MoveResource(MoveResourceOutput {
             address: item.address.clone(),
-            name: item.resource.clone().unwrap_or_default().name,
-            module: item.resource.clone().unwrap_or_default().module,
+            type_str: item.type_str.clone(),
+            name: item
+                .r#type
+                .as_ref()
+                .map(|a| a.name.clone())
+                .unwrap_or_default(),
+            module: item
+                .r#type
+                .as_ref()
+                .map(|a| a.module.clone())
+                .unwrap_or_default(),
             generic_type_params: Vec::default(),
             data: String::default(),
             is_deleted: true,
             wsc_index: index,
         }),
         ChangeInput::WriteResource(item) => {
-            let data = item.data.clone().unwrap_or(MoveResource {
-                r#type: Some(MoveStructTag::default()),
-                data: String::default(),
-            });
-            let struct_tag = data.r#type.clone().unwrap_or_default();
+            let struct_tag = item.r#type.clone().unwrap_or_default();
             ChangeOutput::MoveResource(MoveResourceOutput {
                 address: item.address.clone(),
-                name: struct_tag.name,
-                module: struct_tag.module,
+                module: struct_tag.module.clone(),
+                type_str: item.type_str.clone(),
+                name: struct_tag.name.clone(),
                 generic_type_params: struct_tag
                     .generic_type_params
                     .iter()
                     .map(|param| serde_json::to_string(param).unwrap_or_default())
                     .collect(),
-                data: data.data.clone(),
+                data: item.data.clone(),
                 is_deleted: false,
                 wsc_index: index,
             })

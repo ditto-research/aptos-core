@@ -523,6 +523,9 @@ impl serde::Serialize for EventOutput {
         if !self.r#type.is_empty() {
             len += 1;
         }
+        if !self.type_str.is_empty() {
+            len += 1;
+        }
         if !self.data.is_empty() {
             len += 1;
         }
@@ -543,6 +546,9 @@ impl serde::Serialize for EventOutput {
         if !self.r#type.is_empty() {
             struct_ser.serialize_field("type", &self.r#type)?;
         }
+        if !self.type_str.is_empty() {
+            struct_ser.serialize_field("typeStr", &self.type_str)?;
+        }
         if !self.data.is_empty() {
             struct_ser.serialize_field("data", &self.data)?;
         }
@@ -555,7 +561,14 @@ impl<'de> serde::Deserialize<'de> for EventOutput {
     where
         D: serde::Deserializer<'de>,
     {
-        const FIELDS: &[&str] = &["version", "key", "sequenceNumber", "type", "data"];
+        const FIELDS: &[&str] = &[
+            "version",
+            "key",
+            "sequenceNumber",
+            "type",
+            "typeStr",
+            "data",
+        ];
 
         #[allow(clippy::enum_variant_names)]
         enum GeneratedField {
@@ -563,6 +576,7 @@ impl<'de> serde::Deserialize<'de> for EventOutput {
             Key,
             SequenceNumber,
             Type,
+            TypeStr,
             Data,
         }
         impl<'de> serde::Deserialize<'de> for GeneratedField {
@@ -592,6 +606,7 @@ impl<'de> serde::Deserialize<'de> for EventOutput {
                             "key" => Ok(GeneratedField::Key),
                             "sequenceNumber" => Ok(GeneratedField::SequenceNumber),
                             "type" => Ok(GeneratedField::Type),
+                            "typeStr" => Ok(GeneratedField::TypeStr),
                             "data" => Ok(GeneratedField::Data),
                             _ => Err(serde::de::Error::unknown_field(value, FIELDS)),
                         }
@@ -616,6 +631,7 @@ impl<'de> serde::Deserialize<'de> for EventOutput {
                 let mut key__ = None;
                 let mut sequence_number__ = None;
                 let mut r#type__ = None;
+                let mut type_str__ = None;
                 let mut data__ = None;
                 while let Some(k) = map.next_key()? {
                     match k {
@@ -649,6 +665,12 @@ impl<'de> serde::Deserialize<'de> for EventOutput {
                             }
                             r#type__ = Some(map.next_value()?);
                         }
+                        GeneratedField::TypeStr => {
+                            if type_str__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("typeStr"));
+                            }
+                            type_str__ = Some(map.next_value()?);
+                        }
                         GeneratedField::Data => {
                             if data__.is_some() {
                                 return Err(serde::de::Error::duplicate_field("data"));
@@ -662,6 +684,7 @@ impl<'de> serde::Deserialize<'de> for EventOutput {
                     key: key__,
                     sequence_number: sequence_number__.unwrap_or_default(),
                     r#type: r#type__.unwrap_or_default(),
+                    type_str: type_str__.unwrap_or_default(),
                     data: data__.unwrap_or_default(),
                 })
             }
@@ -1015,6 +1038,9 @@ impl serde::Serialize for MoveResourceOutput {
         if !self.module.is_empty() {
             len += 1;
         }
+        if !self.type_str.is_empty() {
+            len += 1;
+        }
         if !self.name.is_empty() {
             len += 1;
         }
@@ -1037,6 +1063,9 @@ impl serde::Serialize for MoveResourceOutput {
         }
         if !self.module.is_empty() {
             struct_ser.serialize_field("module", &self.module)?;
+        }
+        if !self.type_str.is_empty() {
+            struct_ser.serialize_field("typeStr", &self.type_str)?;
         }
         if !self.name.is_empty() {
             struct_ser.serialize_field("name", &self.name)?;
@@ -1066,6 +1095,7 @@ impl<'de> serde::Deserialize<'de> for MoveResourceOutput {
         const FIELDS: &[&str] = &[
             "address",
             "module",
+            "typeStr",
             "name",
             "genericTypeParams",
             "data",
@@ -1077,6 +1107,7 @@ impl<'de> serde::Deserialize<'de> for MoveResourceOutput {
         enum GeneratedField {
             Address,
             Module,
+            TypeStr,
             Name,
             GenericTypeParams,
             Data,
@@ -1108,6 +1139,7 @@ impl<'de> serde::Deserialize<'de> for MoveResourceOutput {
                         match value {
                             "address" => Ok(GeneratedField::Address),
                             "module" => Ok(GeneratedField::Module),
+                            "typeStr" => Ok(GeneratedField::TypeStr),
                             "name" => Ok(GeneratedField::Name),
                             "genericTypeParams" => Ok(GeneratedField::GenericTypeParams),
                             "data" => Ok(GeneratedField::Data),
@@ -1134,6 +1166,7 @@ impl<'de> serde::Deserialize<'de> for MoveResourceOutput {
             {
                 let mut address__ = None;
                 let mut module__ = None;
+                let mut type_str__ = None;
                 let mut name__ = None;
                 let mut generic_type_params__ = None;
                 let mut data__ = None;
@@ -1152,6 +1185,12 @@ impl<'de> serde::Deserialize<'de> for MoveResourceOutput {
                                 return Err(serde::de::Error::duplicate_field("module"));
                             }
                             module__ = Some(map.next_value()?);
+                        }
+                        GeneratedField::TypeStr => {
+                            if type_str__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("typeStr"));
+                            }
+                            type_str__ = Some(map.next_value()?);
                         }
                         GeneratedField::Name => {
                             if name__.is_some() {
@@ -1191,6 +1230,7 @@ impl<'de> serde::Deserialize<'de> for MoveResourceOutput {
                 Ok(MoveResourceOutput {
                     address: address__.unwrap_or_default(),
                     module: module__.unwrap_or_default(),
+                    type_str: type_str__.unwrap_or_default(),
                     name: name__.unwrap_or_default(),
                     generic_type_params: generic_type_params__.unwrap_or_default(),
                     data: data__.unwrap_or_default(),
@@ -2283,6 +2323,9 @@ impl serde::Serialize for UserTransactionOutput {
         if !self.payload.is_empty() {
             len += 1;
         }
+        if !self.entry_function_id_str.is_empty() {
+            len += 1;
+        }
         let mut struct_ser =
             serializer.serialize_struct("aptos.block_output.v1.UserTransactionOutput", len)?;
         if self.version != 0 {
@@ -2324,6 +2367,9 @@ impl serde::Serialize for UserTransactionOutput {
         if !self.payload.is_empty() {
             struct_ser.serialize_field("payload", &self.payload)?;
         }
+        if !self.entry_function_id_str.is_empty() {
+            struct_ser.serialize_field("entryFunctionIdStr", &self.entry_function_id_str)?;
+        }
         struct_ser.end()
     }
 }
@@ -2344,6 +2390,7 @@ impl<'de> serde::Deserialize<'de> for UserTransactionOutput {
             "timestamp",
             "signatures",
             "payload",
+            "entryFunctionIdStr",
         ];
 
         #[allow(clippy::enum_variant_names)]
@@ -2358,6 +2405,7 @@ impl<'de> serde::Deserialize<'de> for UserTransactionOutput {
             Timestamp,
             Signatures,
             Payload,
+            EntryFunctionIdStr,
         }
         impl<'de> serde::Deserialize<'de> for GeneratedField {
             fn deserialize<D>(deserializer: D) -> std::result::Result<GeneratedField, D::Error>
@@ -2394,6 +2442,7 @@ impl<'de> serde::Deserialize<'de> for UserTransactionOutput {
                             "timestamp" => Ok(GeneratedField::Timestamp),
                             "signatures" => Ok(GeneratedField::Signatures),
                             "payload" => Ok(GeneratedField::Payload),
+                            "entryFunctionIdStr" => Ok(GeneratedField::EntryFunctionIdStr),
                             _ => Err(serde::de::Error::unknown_field(value, FIELDS)),
                         }
                     }
@@ -2426,6 +2475,7 @@ impl<'de> serde::Deserialize<'de> for UserTransactionOutput {
                 let mut timestamp__ = None;
                 let mut signatures__ = None;
                 let mut payload__ = None;
+                let mut entry_function_id_str__ = None;
                 while let Some(k) = map.next_key()? {
                     match k {
                         GeneratedField::Version => {
@@ -2504,6 +2554,14 @@ impl<'de> serde::Deserialize<'de> for UserTransactionOutput {
                             }
                             payload__ = Some(map.next_value()?);
                         }
+                        GeneratedField::EntryFunctionIdStr => {
+                            if entry_function_id_str__.is_some() {
+                                return Err(serde::de::Error::duplicate_field(
+                                    "entryFunctionIdStr",
+                                ));
+                            }
+                            entry_function_id_str__ = Some(map.next_value()?);
+                        }
                     }
                 }
                 Ok(UserTransactionOutput {
@@ -2517,6 +2575,7 @@ impl<'de> serde::Deserialize<'de> for UserTransactionOutput {
                     timestamp: timestamp__,
                     signatures: signatures__.unwrap_or_default(),
                     payload: payload__.unwrap_or_default(),
+                    entry_function_id_str: entry_function_id_str__.unwrap_or_default(),
                 })
             }
         }

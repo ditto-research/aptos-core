@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import typing
 import unittest
+from typing import List
 
 from . import ed25519
 from .account_address import AccountAddress
@@ -53,7 +54,7 @@ class RawTransaction:
         self.expiration_timestamps_secs = expiration_timestamps_secs
         self.chain_id = chain_id
 
-    def __eq__(self, other: RawTranasction) -> bool:
+    def __eq__(self, other: RawTransaction) -> bool:
         return (
             self.sender == other.sender
             and self.sequence_number == other.sequence_number

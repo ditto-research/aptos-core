@@ -291,8 +291,8 @@ impl ::std::iter::IntoIterator for DeltaChangeSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aptos_state_view::state_storage_usage::StateStorageUsage;
-    use claim::{assert_err, assert_matches, assert_ok, assert_ok_eq};
+    use aptos_types::state_store::state_storage_usage::StateStorageUsage;
+    use claims::{assert_err, assert_matches, assert_ok, assert_ok_eq};
     use once_cell::sync::Lazy;
     use std::collections::HashMap;
 

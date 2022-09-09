@@ -47,6 +47,7 @@ members = [
     "crates/aptos-log-derive",
     "crates/aptos-logger",
     "crates/aptos-metrics-core",
+    "crates/aptos-network-checker",
     "crates/aptos-openapi",
     "crates/aptos-proptest-helpers",
     "crates/aptos-rate-limiter",
@@ -71,6 +72,7 @@ members = [
     "crates/transaction-emitter-lib",
     "ecosystem/indexer",
     "ecosystem/node-checker",
+    "ecosystem/node-checker/fn-check-client",
     "ecosystem/sf-indexer/aptos-sf-indexer",
     "ecosystem/sf-indexer/firehose-stream",
     "execution/db-bootstrapper",
@@ -124,6 +126,7 @@ members = [
 ]
 
 exclude =[
+    "crates/aptos-protos",
     "ecosystem/sf-indexer/aptos-substreams",
 ]
 

@@ -24,6 +24,7 @@ use aptos_crypto::{
     PrivateKey,
 };
 use aptos_keygen::KeyGen;
+use aptos_logger::prelude::*;
 use aptos_types::{chain_id::ChainId, transaction::Transaction, waypoint::Waypoint};
 use framework::ReleaseBundle;
 use rand::Rng;
@@ -48,6 +49,7 @@ const GENESIS_BLOB: &str = "genesis.blob";
 #[derive(Debug, Clone)]
 pub struct ValidatorNodeConfig {
     pub name: String,
+    pub index: usize,
     pub config: NodeConfig,
     pub dir: PathBuf,
     pub account_private_key: Option<ConfigKey<Ed25519PrivateKey>>,
@@ -58,6 +60,7 @@ impl ValidatorNodeConfig {
     /// Create a new validator and initialize keys appropriately
     pub fn new(
         name: String,
+        index: usize,
         base_dir: &Path,
         mut config: NodeConfig,
         genesis_stake_amount: u64,
@@ -69,6 +72,7 @@ impl ValidatorNodeConfig {
 
         Ok(ValidatorNodeConfig {
             name,
+            index,
             config,
             dir,
             account_private_key: None,
@@ -457,18 +461,19 @@ impl Builder {
     where
         R: rand::RngCore + rand::CryptoRng,
     {
-        println!(
+        // We use this print statement to allow debugging of local deployments
+        info!(
             "Building genesis with {:?} validators. Directory of output: {:?}",
             self.num_validators.get(),
             self.config_dir
         );
-        let mut keygen = KeyGen::from_seed(rng.gen());
 
         // Generate root key
+        let mut keygen = KeyGen::from_seed(rng.gen());
         let root_key = keygen.generate_ed25519_private_key();
 
-        let template = NodeConfig::default_for_validator();
         // Generate validator configs
+        let template = NodeConfig::default_for_validator();
         let mut validators: Vec<ValidatorNodeConfig> = (0..self.num_validators.get())
             .map(|i| self.generate_validator_config(i, &mut rng, &template))
             .collect::<anyhow::Result<Vec<ValidatorNodeConfig>>>()?;
@@ -504,6 +509,7 @@ impl Builder {
 
         let mut validator = ValidatorNodeConfig::new(
             name,
+            index,
             self.config_dir.as_path(),
             config,
             genesis_stake_amount,

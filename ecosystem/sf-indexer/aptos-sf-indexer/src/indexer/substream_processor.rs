@@ -52,28 +52,6 @@ pub trait SubstreamProcessor: Send + Sync + Debug {
     fn set_is_chain_id_verified(&mut self);
     //* Below are helper methods that don't need to be implemented *//
 
-    /// Gets the connection.
-    /// If it was unable to do so (default timeout: 30s), it will keep retrying until it can.
-    /// It's a static method because we need the connection before the processor is initialized
-    fn get_conn(pool: &PgDbPool) -> PgPoolConnection {
-        loop {
-            match pool.get() {
-                Ok(conn) => {
-                    GOT_CONNECTION.inc();
-                    return conn;
-                }
-                Err(err) => {
-                    UNABLE_TO_GET_CONNECTION.inc();
-                    aptos_logger::error!(
-                        "Could not get DB connection from pool, will retry in {:?}. Err: {:?}",
-                        pool.connection_timeout(),
-                        err
-                    );
-                }
-            };
-        }
-    }
-
     /// This is a helper method, tying together the other helper methods to allow tracking status in the DB
     async fn process_substream_with_status(
         &mut self,
@@ -84,9 +62,9 @@ pub trait SubstreamProcessor: Send + Sync + Debug {
             .with_label_values(&[self.substream_module_name()])
             .inc();
 
-        aptos_logger::debug!("Marking block started {}", block_height);
+        aptos_logger::debug!(block_height = block_height, "Marking block started");
         self.mark_block_started(block_height);
-        aptos_logger::debug!("Starting to process stream for block {}", block_height);
+        aptos_logger::debug!(block_height = block_height, "Starting to process stream");
         let res = self.process_substream(stream_data, block_height).await;
         // Handle block success/failure
         match res.as_ref() {
@@ -99,9 +77,9 @@ pub trait SubstreamProcessor: Send + Sync + Debug {
     /// Writes that a block has been started for this `SubstreamProcessor` to the DB
     fn mark_block_started(&self, block_height: u64) {
         aptos_logger::debug!(
-            "[{}] Marking processing block started: {}",
-            self.substream_module_name(),
-            block_height
+            substream_module_name = self.substream_module_name(),
+            block_height = block_height,
+            "Marking processing block started",
         );
         let psm = IndexerState::for_mark_started(
             self.substream_module_name().to_string(),
@@ -113,9 +91,9 @@ pub trait SubstreamProcessor: Send + Sync + Debug {
     /// Writes that a block has been completed successfully for this `SubstreamProcessor` to the DB
     fn update_status_success(&self, processing_result: &ProcessingResult) {
         aptos_logger::debug!(
-            "[{}] Marking processing block OK: block_height {}",
-            self.substream_module_name(),
-            processing_result.block_height
+            substream_module_name = self.substream_module_name(),
+            block_height = processing_result.block_height,
+            "Marking processing block OK",
         );
         PROCESSOR_SUCCESSES
             .with_label_values(&[self.substream_module_name()])
@@ -130,8 +108,8 @@ pub trait SubstreamProcessor: Send + Sync + Debug {
     /// Writes that a block has errored for this `SubstreamProcessor` to the DB
     fn update_status_err(&self, bpe: &BlockProcessingError) {
         aptos_logger::debug!(
-            "[{}] Marking processing block Err: {:?}",
-            self.substream_module_name(),
+            substream_module_name = self.substream_module_name(),
+            "Marking processing block ERROR. {:?}",
             bpe
         );
         PROCESSOR_ERRORS
@@ -143,7 +121,7 @@ pub trait SubstreamProcessor: Send + Sync + Debug {
 
     /// Actually performs the write for a `IndexerState` changeset
     fn apply_processor_status(&self, psm: &IndexerState) {
-        let conn = Self::get_conn(self.connection_pool());
+        let conn = get_conn(self.connection_pool());
         execute_with_better_error(
             &conn,
             diesel::insert_into(indexer_states::table)
@@ -178,12 +156,12 @@ pub trait SubstreamProcessor: Send + Sync + Debug {
                 if *chain_id != input_chain_id {
                     panic!("Wrong chain detected! Trying to index chain {} now but existing data is for chain {}", input_chain_id, chain_id);
                 }
-                info!("Chain id matches! Continuing to index chain {}", chain_id);
+                info!(chain_id = chain_id, "Chain id matches! Continuing to index");
             }
             None => {
                 info!(
-                    "Adding chain id {} to db, continue to index",
-                    input_chain_id
+                    input_chain_id = input_chain_id,
+                    "Adding chain id to db, continue to index",
                 );
                 execute_with_better_error(
                     &conn,
@@ -195,6 +173,28 @@ pub trait SubstreamProcessor: Send + Sync + Debug {
             }
         }
         self.set_is_chain_id_verified();
+    }
+}
+
+/// Gets the connection.
+/// If it was unable to do so (default timeout: 30s), it will keep retrying until it can.
+/// It's a static method because we need the connection before the processor is initialized
+pub(crate) fn get_conn(pool: &PgDbPool) -> PgPoolConnection {
+    loop {
+        match pool.get() {
+            Ok(conn) => {
+                GOT_CONNECTION.inc();
+                return conn;
+            }
+            Err(err) => {
+                UNABLE_TO_GET_CONNECTION.inc();
+                aptos_logger::error!(
+                    "Could not get DB connection from pool, will retry in {:?}. Err: {:?}",
+                    pool.connection_timeout(),
+                    err
+                );
+            }
+        };
     }
 }
 
@@ -215,17 +215,32 @@ pub fn get_start_block(pool: &PgDbPool, substream_module_name: &String) -> Optio
     let conn = pool
         .get()
         .expect("Could not get connection for checking starting block");
+    // This query gets the first block where the block height (aka block id) isn't equal to the next
+    // block in the list (where block ids are sorted). There's also special handling if the gap happens in the beginning.
     let sql = "
-        WITH boundaries AS
+        WITH raw_boundaries AS
         (
             SELECT
-                MAX(block_height) AS MAX_V,
-                MIN(block_height) AS MIN_V
+                MAX(block_height) AS MAX_BLOCK,
+                MIN(block_height) AS MIN_BLOCK
             FROM
                 indexer_states
             WHERE
                 substream_module = $1
                 AND success = TRUE
+        ),
+        boundaries AS
+        (
+            SELECT
+                MAX(block_height) AS MAX_BLOCK,
+                MIN(block_height) AS MIN_BLOCK
+            FROM
+                indexer_states, raw_boundaries
+            WHERE
+                substream_module = $1
+                AND success = true
+                and block_height >= GREATEST(MAX_BLOCK - $2, 0)
+
         ),
         gap AS
         (
@@ -244,7 +259,7 @@ pub fn get_start_block(pool: &PgDbPool, substream_module_name: &String) -> Optio
                     WHERE
                         substream_module = $1
                         AND success = TRUE
-                        AND block_height >= MAX_V - 1000000
+                        AND block_height >= GREATEST(MAX_BLOCK - $2, 0)
                 ) a
             WHERE
                 block_height + 1 <> next_block_height
@@ -252,11 +267,11 @@ pub fn get_start_block(pool: &PgDbPool, substream_module_name: &String) -> Optio
         SELECT
             CASE
                 WHEN
-                    MIN_V <> 0
+                    MIN_BLOCK <> GREATEST(MAX_BLOCK - $2, 0)
                 THEN
-                    0
+                    GREATEST(MAX_BLOCK - $2, 0)
                 ELSE
-                    COALESCE(maybe_gap, MAX_V + 1)
+                    COALESCE(maybe_gap, MAX_BLOCK + 1)
             END
             AS block_height
         FROM
@@ -269,6 +284,8 @@ pub fn get_start_block(pool: &PgDbPool, substream_module_name: &String) -> Optio
     }
     let mut res: Vec<Option<Gap>> = sql_query(sql)
         .bind::<Text, _>(substream_module_name)
+        // This is the number used to determine how far we look back for gaps. Increasing it may result in slower startup
+        .bind::<BigInt, _>(1500000)
         .get_results(&conn)
         .unwrap();
     res.pop().unwrap().map(|g| g.block_height)

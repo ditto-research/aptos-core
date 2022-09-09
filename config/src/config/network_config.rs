@@ -36,12 +36,12 @@ pub const HANDSHAKE_VERSION: u8 = 0;
 pub const NETWORK_CHANNEL_SIZE: usize = 1024;
 pub const PING_INTERVAL_MS: u64 = 10_000;
 pub const PING_TIMEOUT_MS: u64 = 20_000;
-pub const PING_FAILURES_TOLERATED: u64 = 5;
+pub const PING_FAILURES_TOLERATED: u64 = 3;
 pub const CONNECTIVITY_CHECK_INTERVAL_MS: u64 = 5000;
 pub const MAX_CONCURRENT_NETWORK_REQS: usize = 100;
 pub const MAX_CONNECTION_DELAY_MS: u64 = 60_000; /* 1 minute */
 pub const MAX_FULLNODE_OUTBOUND_CONNECTIONS: usize = 4;
-pub const MAX_INBOUND_CONNECTIONS: usize = 100;
+pub const MAX_INBOUND_CONNECTIONS: usize = 30; /* At 5k TPS this could easily hit ~50MiB a second */
 pub const MAX_MESSAGE_METADATA_SIZE: usize = 128 * 1024; /* 128 KiB: a buffer for metadata that might be added to messages by networking */
 pub const MESSAGE_PADDING_SIZE: usize = 2 * 1024 * 1024; /* 2 MiB: a safety buffer to allow messages to get larger during serialization */
 pub const MAX_APPLICATION_MESSAGE_SIZE: usize =
@@ -315,7 +315,7 @@ impl NetworkConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PeerMonitoringServiceConfig {
     pub max_concurrent_requests: u64, // Max num of concurrent server tasks
@@ -377,7 +377,7 @@ pub struct IdentityFromConfig {
 }
 
 /// This represents an identity in a secure-storage as defined in NodeConfig::secure.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct IdentityFromStorage {
     pub backend: SecureBackend,
@@ -385,7 +385,7 @@ pub struct IdentityFromStorage {
     pub peer_id_name: String,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct IdentityFromFile {
     pub path: PathBuf,
@@ -475,7 +475,7 @@ impl fmt::Display for PeerRole {
 }
 
 /// Represents a single seed configuration for a seed peer
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(default)]
 pub struct Peer {
     pub addresses: Vec<NetworkAddress>,

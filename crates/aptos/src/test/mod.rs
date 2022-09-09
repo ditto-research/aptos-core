@@ -25,7 +25,7 @@ use crate::node::{
     ShowValidatorStake, UpdateConsensusKey, UpdateValidatorNetworkAddresses,
     ValidatorConsensusKeyArgs, ValidatorNetworkAddressesArgs,
 };
-use crate::op::key::{ExtractPeer, GenerateKey, SaveKey};
+use crate::op::key::{ExtractPeer, GenerateKey, NetworkKeyInputOptions, SaveKey};
 use crate::stake::{
     AddStake, IncreaseLockup, InitializeStakeOwner, SetDelegatedVoter, SetOperator, UnlockStake,
     WithdrawStake,
@@ -50,6 +50,9 @@ use std::collections::HashMap;
 use std::{collections::BTreeMap, path::PathBuf, str::FromStr, time::Duration};
 use thiserror::private::PathAsDisplay;
 use tokio::time::{sleep, Instant};
+
+#[cfg(test)]
+mod tests;
 
 pub const INVALID_ACCOUNT: &str = "0xDEADBEEFCAFEBABE";
 
@@ -119,7 +122,7 @@ impl CliTestFramework {
         // Create account if it doesn't exist (and there's a faucet)
         let client = aptos_rest_client::Client::new(self.endpoint.clone());
         let address = self.account_id(index);
-        return client.get_account(address).await.is_ok();
+        client.get_account(address).await.is_ok()
     }
 
     pub fn add_account_to_cli(&mut self, private_key: Ed25519PrivateKey) -> usize {
@@ -489,7 +492,7 @@ impl CliTestFramework {
 
     pub async fn account_balance_now(&self, index: usize) -> CliTypedResult<u64> {
         let result = self.list_account(index, ListQuery::Balance).await?;
-        Ok(json_account_to_balance(result.get(0).unwrap()))
+        Ok(json_account_to_balance(result.first().unwrap()))
     }
 
     pub async fn assert_account_balance_now(&self, index: usize, expected: u64) {
@@ -502,7 +505,7 @@ impl CliTestFramework {
             self.last_n_transactions_details(10).await
         );
         let accounts = result.unwrap();
-        let account = accounts.get(0).unwrap();
+        let account = accounts.first().unwrap();
         let coin = json_account_to_balance(account);
         assert_eq!(
             coin,
@@ -569,17 +572,20 @@ impl CliTestFramework {
 
     pub async fn extract_peer(
         &self,
+        host: HostAndPort,
         private_key_file: PathBuf,
         output_file: PathBuf,
     ) -> CliTypedResult<HashMap<AccountAddress, Peer>> {
         ExtractPeer {
-            private_key_input_options: PrivateKeyInputOptions::from_file(private_key_file),
+            host,
+            network_key_input_options: NetworkKeyInputOptions::from_private_key_file(
+                private_key_file,
+            ),
             output_file_options: SaveFile {
                 output_file,
                 prompt_options: PromptOptions::yes(),
             },
             encoding_options: Default::default(),
-            profile_options: Default::default(),
         }
         .execute()
         .await
@@ -627,6 +633,7 @@ impl CliTestFramework {
         &self,
         name: String,
         account_strs: BTreeMap<&str, &str>,
+        framework_dir: Option<PathBuf>,
     ) -> CliTypedResult<()> {
         InitPackage {
             name,
@@ -636,6 +643,7 @@ impl CliTestFramework {
                 assume_yes: false,
                 assume_no: true,
             },
+            for_test_framework: framework_dir,
         }
         .execute()
         .await
@@ -644,9 +652,12 @@ impl CliTestFramework {
     pub async fn compile_package(
         &self,
         account_strs: BTreeMap<&str, &str>,
+        included_artifacts: Option<IncludedArtifacts>,
     ) -> CliTypedResult<Vec<String>> {
         CompilePackage {
             move_options: self.move_options(account_strs),
+            save_metadata: false,
+            included_artifacts: included_artifacts.unwrap_or(IncludedArtifacts::Sparse),
         }
         .execute()
         .await
@@ -672,13 +683,14 @@ impl CliTestFramework {
         gas_options: Option<GasOptions>,
         account_strs: BTreeMap<&str, &str>,
         legacy_flow: bool,
+        included_artifacts: Option<IncludedArtifacts>,
     ) -> CliTypedResult<TransactionSummary> {
         PublishPackage {
             move_options: self.move_options(account_strs),
             txn_options: self.transaction_options(index, gas_options),
             legacy_flow,
             override_size_check: false,
-            included_artifacts: IncludedArtifacts::All,
+            included_artifacts: included_artifacts.unwrap_or(IncludedArtifacts::All),
         }
         .execute()
         .await
@@ -789,6 +801,8 @@ impl CliTestFramework {
                 .unwrap(),
             rest_options: self.rest_options(),
             gas_options: gas_options.unwrap_or_default(),
+            prompt_options: PromptOptions::yes(),
+            estimate_max_gas: true,
             ..Default::default()
         }
     }

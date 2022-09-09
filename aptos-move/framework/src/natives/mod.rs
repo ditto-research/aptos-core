@@ -14,6 +14,7 @@ pub mod transaction_context;
 pub mod type_info;
 pub mod util;
 
+use crate::natives::cryptography::multi_ed25519;
 use aggregator_natives::{aggregator, aggregator_factory};
 use cryptography::ed25519;
 use gas_algebra_ext::AbstractValueSize;
@@ -114,6 +115,10 @@ impl GasParameters {
                     base: 0.into(),
                     per_byte: 0.into(),
                 },
+                keccak256: hash::Keccak256HashGasParameters {
+                    base: 0.into(),
+                    per_byte: 0.into(),
+                },
             },
             type_info: type_info::GasParameters {
                 type_of: type_info::TypeOfGasParameters {
@@ -180,7 +185,8 @@ pub fn all_natives(
     }
 
     add_natives_from_module!("account", account::make_all(gas_params.account));
-    add_natives_from_module!("ed25519", ed25519::make_all(gas_params.ed25519));
+    add_natives_from_module!("ed25519", ed25519::make_all(gas_params.ed25519.clone()));
+    add_natives_from_module!("multi_ed25519", multi_ed25519::make_all(gas_params.ed25519));
     add_natives_from_module!(
         "bls12381",
         cryptography::bls12381::make_all(gas_params.bls12381)
@@ -196,7 +202,7 @@ pub fn all_natives(
     );
     add_natives_from_module!("type_info", type_info::make_all(gas_params.type_info));
     add_natives_from_module!("util", util::make_all(gas_params.util.clone()));
-    add_natives_from_module!("any", util::make_all(gas_params.util));
+    add_natives_from_module!("from_bcs", util::make_all(gas_params.util));
     add_natives_from_module!(
         "transaction_context",
         transaction_context::make_all(gas_params.transaction_context)

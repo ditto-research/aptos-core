@@ -16,9 +16,13 @@ If you are new to the Aptos Blockchain, begin with these quickstarts before you 
 
     Write your first Move Module for the Aptos Blockchain. Make sure to run the above [Your First Transaction](first-transaction.md) tutorial before running this.
 
+<!--
+This needs to be updated to use the CLI
+
 - ### [Your First Coin](first-coin.md)
 
     Deploy your first coin on the Aptos Blockchain. Make sure to run the above [Your First Transaction](first-transaction.md) tutorial before running this.
+-->
 
 - ### [Your First Dapp](first-dapp.md)
 
@@ -28,4 +32,6 @@ If you are new to the Aptos Blockchain, begin with these quickstarts before you 
 
     Learn the Aptos `Token` interface and how to use it.
 
+- ### [Your First Coin](first-coin.md)
 
+    Learn how to deploy and managed a coin.

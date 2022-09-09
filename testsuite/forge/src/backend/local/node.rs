@@ -4,11 +4,14 @@
 use crate::{FullNode, HealthCheckError, LocalVersion, Node, NodeExt, Validator, Version};
 use anyhow::{anyhow, ensure, Context, Result};
 use aptos_config::{config::NodeConfig, keys::ConfigKey};
-use aptos_logger::debug;
+use aptos_logger::{debug, info};
 use aptos_sdk::{
     crypto::ed25519::Ed25519PrivateKey,
     types::{account_address::AccountAddress, PeerId},
 };
+use aptos_secure_storage::SECURE_STORAGE_DB_NAME;
+use aptosdb::{LEDGER_DB_NAME, STATE_MERKLE_DB_NAME};
+use state_sync_driver::metadata_storage::STATE_SYNC_DB_NAME;
 use std::{
     env,
     fs::{self, OpenOptions},
@@ -43,6 +46,7 @@ pub struct LocalNode {
     version: LocalVersion,
     process: Option<Process>,
     name: String,
+    index: usize,
     account_private_key: Option<ConfigKey<Ed25519PrivateKey>>,
     peer_id: AccountAddress,
     directory: PathBuf,
@@ -53,6 +57,7 @@ impl LocalNode {
     pub fn new(
         version: LocalVersion,
         name: String,
+        index: usize,
         directory: PathBuf,
         account_private_key: Option<ConfigKey<Ed25519PrivateKey>>,
     ) -> Result<Self> {
@@ -67,6 +72,7 @@ impl LocalNode {
             version,
             process: None,
             name,
+            index,
             account_private_key,
             peer_id,
             directory,
@@ -122,12 +128,25 @@ impl LocalNode {
             )
         })?;
 
-        println!(
-            "Started node {:?} (PID: {:?}) with command: {:?}",
+        // We print out the commands and PIDs for debugging of local swarms
+        info!(
+            "Started node {} (PID: {}) with command: {:?}",
             self.name,
             process.id(),
             node_command
         );
+
+        // We print out the API endpoints of each node for local debugging
+        info!(
+            "Node {}: REST API is listening at: http://127.0.0.1:{}",
+            self.name,
+            self.config.api.address.port()
+        );
+        info!(
+            "Node {}: Inspection service is listening at http://127.0.0.1:{}",
+            self.name, self.config.inspection_service.port
+        );
+
         self.process = Some(Process(process));
 
         Ok(())
@@ -207,6 +226,10 @@ impl Node for LocalNode {
         self.peer_id()
     }
 
+    fn index(&self) -> usize {
+        self.index
+    }
+
     fn name(&self) -> &str {
         self.name()
     }
@@ -242,8 +265,50 @@ impl Node for LocalNode {
         Ok(())
     }
 
-    fn clear_storage(&mut self) -> Result<()> {
-        todo!()
+    async fn clear_storage(&mut self) -> Result<()> {
+        // Remove all storage files (i.e., blockchain data, consensus data and state sync data)
+        let node_config = self.config();
+        let ledger_db_path = node_config.storage.dir().join(LEDGER_DB_NAME);
+        let state_db_path = node_config.storage.dir().join(STATE_MERKLE_DB_NAME);
+        let secure_storage_db_path = node_config.base.data_dir.join(SECURE_STORAGE_DB_NAME);
+        let state_sync_db_path = node_config.storage.dir().join(STATE_SYNC_DB_NAME);
+
+        debug!(
+            "Deleting ledger, state, secure and state sync db paths ({:?}, {:?}, {:?}, {:?}) for node {:?}",
+            ledger_db_path.as_path(),
+            state_db_path.as_path(),
+            secure_storage_db_path.as_path(),
+            state_sync_db_path.as_path(),
+            self.name
+        );
+
+        // Verify the files exist
+        assert!(ledger_db_path.as_path().exists() && state_db_path.as_path().exists());
+        assert!(state_sync_db_path.as_path().exists());
+        if self.config.base.role.is_validator() {
+            assert!(secure_storage_db_path.as_path().exists());
+        }
+
+        // Remove the files
+        fs::remove_dir_all(ledger_db_path)
+            .map_err(anyhow::Error::from)
+            .context("Failed to delete ledger_db_path")?;
+        fs::remove_dir_all(state_db_path)
+            .map_err(anyhow::Error::from)
+            .context("Failed to delete state_db_path")?;
+        fs::remove_dir_all(state_sync_db_path)
+            .map_err(anyhow::Error::from)
+            .context("Failed to delete state_sync_db_path")?;
+        if self.config.base.role.is_validator() {
+            fs::remove_dir_all(secure_storage_db_path)
+                .map_err(anyhow::Error::from)
+                .context("Failed to delete secure_storage_db_path")?;
+        }
+
+        // Stop the node to clear buffers
+        self.stop();
+
+        Ok(())
     }
 
     async fn health_check(&mut self) -> Result<(), HealthCheckError> {

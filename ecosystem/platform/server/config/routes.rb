@@ -70,12 +70,17 @@ Rails.application.routes.draw do
 
   # IT3
   resource :it3, only: %i[show update]
-  resources :it3_profiles, except: %i[index destroy]
+  resources :it3_profiles, except: %i[show create new index destroy]
   resources :it3_surveys, except: %i[index destroy]
+
+  # NFTs
+  resources :nft_offers, param: :slug, only: %i[show update]
+  get 'nft_images/:nft_offer_slug/:image_num', { to: 'nft_images#show', constraints: { image_num: /\d+/ } }
 
   # Leaderboards
   get 'leaderboard/it1', to: redirect('/it1')
   get 'leaderboard/it2', to: redirect('/it2')
+  get 'leaderboard/it3'
 
   # IT1
   get 'it1', to: 'leaderboard#it1'
@@ -90,6 +95,9 @@ Rails.application.routes.draw do
     get 'activity'
     get 'rewards'
   end
+
+  # Wallets
+  resources :wallets, only: %i[show create]
 
   # Static pages
   get 'community', to: 'static_page#community'

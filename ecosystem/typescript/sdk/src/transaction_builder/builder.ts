@@ -1,8 +1,7 @@
 // Copyright (c) Aptos
 // SPDX-License-Identifier: Apache-2.0
 
-import * as SHA3 from "js-sha3";
-import { Buffer } from "buffer/";
+import sha3 from "js-sha3";
 import { MemoizeExpiring } from "typescript-memoize";
 import {
   Ed25519PublicKey,
@@ -31,6 +30,10 @@ import { ArgumentABI, EntryFunctionABI, ScriptABI, TransactionScriptABI, TypeArg
 import { HexString, MaybeHexString } from "../hex_string";
 import { argToTransactionArgument, TypeTagParser, serializeArg } from "./builder_utils";
 import * as Gen from "../generated/index";
+
+export { TypeTagParser } from "./builder_utils.js";
+
+const { sha3_256: sha3Hash } = sha3;
 
 const RAW_TRANSACTION_SALT = "APTOS::RawTransaction";
 const RAW_TRANSACTION_WITH_DATA_SALT = "APTOS::RawTransactionWithData";
@@ -66,18 +69,24 @@ export class TransactionBuilder<F extends SigningFn> {
 
   /** Generates a Signing Message out of a raw transaction. */
   static getSigningMessage(rawTxn: AnyRawTransaction): SigningMessage {
-    const hash = SHA3.sha3_256.create();
+    const hash = sha3Hash.create();
     if (rawTxn instanceof RawTransaction) {
-      hash.update(Buffer.from(RAW_TRANSACTION_SALT));
+      hash.update(RAW_TRANSACTION_SALT);
     } else if (rawTxn instanceof MultiAgentRawTransaction) {
-      hash.update(Buffer.from(RAW_TRANSACTION_WITH_DATA_SALT));
+      hash.update(RAW_TRANSACTION_WITH_DATA_SALT);
     } else {
       throw new Error("Unknown transaction type.");
     }
 
     const prefix = new Uint8Array(hash.arrayBuffer());
 
-    return Buffer.from([...prefix, ...bcsToBytes(rawTxn)]);
+    const body = bcsToBytes(rawTxn);
+
+    const mergedArray = new Uint8Array(prefix.length + body.length);
+    mergedArray.set(prefix);
+    mergedArray.set(body, prefix.length);
+
+    return mergedArray;
   }
 }
 
@@ -352,6 +361,9 @@ export class TransactionBuilderRemoteABI {
    * @returns RawTransaction
    */
   async build(func: Gen.EntryFunctionId, ty_tags: Gen.MoveType[], args: any[]): Promise<RawTransaction> {
+    /* eslint no-param-reassign: ["off"] */
+    const normlize = (s: string) => s.replace(/^0[xX]0*/g, "0x");
+    func = normlize(func);
     const funcNameParts = func.split("::");
     if (funcNameParts.length !== 3) {
       throw new Error(

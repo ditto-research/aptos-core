@@ -7,8 +7,8 @@ use aptos_sdk::{
     types::{transaction::SignedTransaction, LocalAccount},
 };
 
-use crate::emitter::account_minter::create_and_fund_account_request;
-use aptos_logger::info;
+use crate::emitter::{account_minter::create_and_fund_account_request, RETRY_POLICY};
+use aptos_logger::{info, warn};
 use rand::rngs::StdRng;
 use std::sync::Arc;
 
@@ -57,6 +57,20 @@ impl TransactionGenerator for NFTMint {
     }
 }
 
+async fn submit_retry_and_wait(rest_client: &RestClient, txn: &SignedTransaction) {
+    let submit_result = RETRY_POLICY
+        .retry(move || rest_client.submit_bcs(txn))
+        .await;
+    if let Err(e) = submit_result {
+        warn!("Failed submitting transaction {:?} with {:?}", txn, e);
+    }
+    // if submission timeouts, it might still get committed:
+    RETRY_POLICY
+        .retry(move || rest_client.wait_for_signed_transaction_bcs(txn))
+        .await
+        .unwrap();
+}
+
 pub async fn initialize_nft_collection(
     rest_client: RestClient,
     root_account: &mut LocalAccount,
@@ -65,6 +79,26 @@ pub async fn initialize_nft_collection(
     collection_name: &[u8],
     token_name: &[u8],
 ) {
+    // resync root account sequence number
+    match rest_client.get_account(root_account.address()).await {
+        Ok(result) => {
+            let account = result.into_inner();
+            if root_account.sequence_number() < account.sequence_number {
+                warn!(
+                    "Root account sequence number got out of sync: remotely {}, locally {}",
+                    account.sequence_number,
+                    root_account.sequence_number_mut()
+                );
+                *root_account.sequence_number_mut() = account.sequence_number;
+            }
+        }
+        Err(e) => warn!(
+            "[{}] Couldn't check account sequence number due to {:?}",
+            rest_client.path_prefix_string(),
+            e
+        ),
+    }
+
     // Create and mint the owner account first
     let create_account_txn = create_and_fund_account_request(
         root_account,
@@ -72,24 +106,22 @@ pub async fn initialize_nft_collection(
         creator_account.public_key(),
         txn_factory,
     );
-    rest_client
-        .submit_and_wait(&create_account_txn)
-        .await
-        .unwrap();
+
+    submit_retry_and_wait(&rest_client, &create_account_txn).await;
 
     info!("create_account_txn complete");
 
     let collection_txn =
         create_nft_collection_request(creator_account, collection_name, txn_factory);
 
-    rest_client.submit_and_wait(&collection_txn).await.unwrap();
+    submit_retry_and_wait(&rest_client, &collection_txn).await;
 
     info!("collection_txn complete");
 
     let token_txn =
         create_nft_token_request(creator_account, collection_name, token_name, txn_factory);
 
-    rest_client.submit_and_wait(&token_txn).await.unwrap();
+    submit_retry_and_wait(&rest_client, &token_txn).await;
 
     info!("token_txn complete");
 }

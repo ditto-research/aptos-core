@@ -8,7 +8,11 @@ module aptos_token::token_transfers {
     use aptos_framework::account;
     use aptos_framework::event::{Self, EventHandle};
 
+    //
+    // Errors.
+    //
 
+    /// Token offer doesn't exist
     const ETOKEN_OFFER_NOT_EXIST: u64 = 1;
 
     struct PendingClaims has key {
@@ -98,7 +102,7 @@ module aptos_token::token_transfers {
         event::emit_event<TokenOfferEvent>(
             &mut borrow_global_mut<PendingClaims>(sender_addr).offer_events,
             TokenOfferEvent {
-                to_address: sender_addr,
+                to_address: receiver,
                 token_id,
                 amount,
             },
@@ -169,7 +173,7 @@ module aptos_token::token_transfers {
         event::emit_event<TokenCancelOfferEvent>(
             &mut borrow_global_mut<PendingClaims>(sender_addr).cancel_offer_events,
             TokenCancelOfferEvent {
-                to_address: sender_addr,
+                to_address: receiver,
                 token_id,
                 amount,
             },

@@ -3,14 +3,17 @@
 
 use std::collections::BTreeMap;
 
-use aptos_config::config::{PeerRole, PeerSet};
+use aptos_config::config::PeerSet;
 use aptos_types::{chain_id::ChainId, PeerId};
 use chrono::Utc;
 use serde_json::json;
 
 use crate::{
     jwt_auth::create_jwt_token,
-    types::telemetry::{TelemetryDump, TelemetryEvent},
+    types::{
+        common::NodeType,
+        telemetry::{TelemetryDump, TelemetryEvent},
+    },
 };
 
 use super::test_context::new_test_context;
@@ -20,20 +23,21 @@ async fn test_custom_event() {
     let test_context = new_test_context().await;
     let chain_id = ChainId::new(28);
     let peer_id = PeerId::random();
-    let peer_role = PeerRole::Validator;
+    let node_type = NodeType::Validator;
     let epoch = 10;
 
     test_context
         .inner
-        .validator_cache()
+        .peers()
+        .validators()
         .write()
         .insert(chain_id, (epoch, PeerSet::default()));
 
     let jwt_token = create_jwt_token(
-        test_context.inner.clone(),
+        test_context.inner.jwt_service(),
         chain_id,
         peer_id,
-        peer_role,
+        node_type,
         epoch,
     )
     .unwrap();

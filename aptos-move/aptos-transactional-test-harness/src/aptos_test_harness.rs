@@ -28,7 +28,7 @@ use aptos_vm::{
     AptosVM,
 };
 use clap::StructOpt;
-use language_e2e_tests::data_store::{FakeDataStore, GENESIS_CHANGE_SET};
+use language_e2e_tests::data_store::{FakeDataStore, GENESIS_CHANGE_SET_HEAD};
 use move_deps::{
     move_binary_format::file_format::{CompiledModule, CompiledScript},
     move_command_line_common::{
@@ -441,7 +441,7 @@ impl<'a> AptosTestAdapter<'a> {
         let sequence_number = sequence_number.unwrap_or_else(|| account_resource.sequence_number());
         let max_number_of_gas_units =
             TransactionGasParameters::initial().maximum_number_of_gas_units;
-        let gas_unit_price = gas_unit_price.unwrap_or(1);
+        let gas_unit_price = gas_unit_price.unwrap_or(1000);
         let max_gas_amount = match max_gas_amount {
             Some(max_gas_amount) => max_gas_amount,
             None => {
@@ -571,7 +571,7 @@ impl<'a> MoveTestAdapter<'a> for AptosTestAdapter<'a> {
 
         // Genesis modules
         let mut storage = FakeDataStore::new(HashMap::new()).into_move_resolver();
-        storage.add_write_set(GENESIS_CHANGE_SET.write_set());
+        storage.add_write_set(GENESIS_CHANGE_SET_HEAD.write_set());
 
         // Builtin private key mapping
         let mut private_key_mapping = BTreeMap::new();

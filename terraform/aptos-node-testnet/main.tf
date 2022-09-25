@@ -1,7 +1,3 @@
-terraform {
-  backend "s3" {}
-}
-
 provider "aws" {
   region = var.region
 }
@@ -9,9 +5,9 @@ provider "aws" {
 data "aws_caller_identity" "current" {}
 
 locals {
-  workspace  = var.workspace_name_override != "" ? var.workspace_name_override : terraform.workspace
-  aws_tags   = "Terraform=testnet,Workspace=${local.workspace}"
-  chain_name = var.chain_name != "" ? var.chain_name : "${local.workspace}net"
+  workspace_name = var.workspace_name_override != "" ? var.workspace_name_override : terraform.workspace
+  aws_tags       = "Terraform=testnet,Workspace=${local.workspace_name}"
+  chain_name     = var.chain_name != "" ? var.chain_name : "${local.workspace_name}net"
 }
 
 # Forge testing overrides
@@ -72,8 +68,6 @@ module "validator" {
   enable_logger                   = true
   monitoring_helm_values          = var.monitoring_helm_values
   logger_helm_values              = var.logger_helm_values
-  enable_vector_daemonset_logger  = var.enable_vector_daemonset_logger
-  vector_daemonset_helm_values    = var.vector_daemonset_helm_values
 }
 
 locals {

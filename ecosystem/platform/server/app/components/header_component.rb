@@ -26,7 +26,7 @@ class HeaderComponent < ViewComponent::Base
     NavGroup.new(
       NavItem.new('#', 'Network', 'Aptos Network'),
       [
-        NavItem.new('https://explorer.devnet.aptos.dev/', 'Explorer', 'Aptos Explorer')
+        NavItem.new('https://explorer.aptoslabs.com/', 'Explorer', 'Aptos Explorer')
       ]
     ),
     NavGroup.new(
@@ -52,7 +52,7 @@ class HeaderComponent < ViewComponent::Base
     @rest = rest
     @rest[:class] = [
       'bg-neutral-900/[.95] border-b border-neutral-800 text-white flex px-4 sm:px-6 items-center',
-      'sticky top-0 z-10 flex-wrap gap-4 h-20 backdrop-blur-lg',
+      'sticky top-0 z-50 flex-wrap gap-4 h-20 backdrop-blur-lg',
       @rest[:class]
     ]
     @rest[:data] ||= {}

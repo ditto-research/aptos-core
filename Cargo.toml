@@ -23,6 +23,7 @@ members = [
     "aptos-move/move-deps",
     "aptos-move/move-examples",
     "aptos-move/mvhashmap",
+    "aptos-move/package-builder",
     "aptos-move/parallel-executor",
     "aptos-move/vm-genesis",
     "aptos-move/writeset-transaction-generator",
@@ -64,17 +65,16 @@ members = [
     "crates/channel",
     "crates/crash-handler",
     "crates/fallible",
+    "crates/indexer",
     "crates/inspection-service",
+    "crates/node-resource-metrics",
     "crates/num-variants",
     "crates/proxy",
     "crates/short-hex-str",
     "crates/transaction-emitter",
     "crates/transaction-emitter-lib",
-    "ecosystem/indexer",
     "ecosystem/node-checker",
     "ecosystem/node-checker/fn-check-client",
-    "ecosystem/sf-indexer/aptos-sf-indexer",
-    "ecosystem/sf-indexer/firehose-stream",
     "execution/db-bootstrapper",
     "execution/executor",
     "execution/executor-benchmark",
@@ -116,6 +116,8 @@ members = [
     "storage/storage-interface",
     "testsuite/aptos-fuzzer",
     "testsuite/aptos-fuzzer/fuzz",
+    "testsuite/dos/listener",
+    "testsuite/dos/sender",
     "testsuite/forge",
     "testsuite/forge-cli",
     "testsuite/generate-format",
@@ -125,10 +127,7 @@ members = [
     "vm-validator",
 ]
 
-exclude =[
-    "crates/aptos-protos",
-    "ecosystem/sf-indexer/aptos-substreams",
-]
+exclude = ["crates/aptos-protos", "ecosystem/sf-indexer"]
 
 # NOTE: default-members is the complete list of binaries that form the "production Aptos codebase". These members should
 # never include crates that require fuzzing features or test features. These are the crates we want built with no extra
@@ -147,7 +146,6 @@ default-members = [
     "aptos-move/framework",
     "execution/db-bootstrapper",
     "storage/backup/backup-cli",
-    "ecosystem/indexer",
     "ecosystem/node-checker",
 ]
 
@@ -159,7 +157,7 @@ overflow-checks = true
 inherits = "release"
 opt-level = 3
 debug = true
-overflow-checks = false
+overflow-checks = true
 lto = true
 codegen-units = 1
 
@@ -181,4 +179,3 @@ debug = true
 [patch.crates-io]
 rocksdb = { git = 'https://github.com/aptos-labs/rust-rocksdb' }
 serde-reflection = { git = "https://github.com/aptos-labs/serde-reflection", rev = "839aed62a20ddccf043c08961cfe74875741ccba" }
-diesel = { git = "https://github.com/aptos-labs/diesel", branch = "1.4.x" }

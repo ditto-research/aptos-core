@@ -8,6 +8,7 @@ use crate::types::{
 };
 use aptos_rest_client::aptos_api_types::U64;
 use aptos_types::chain_id::ChainId;
+use aptos_types::transaction::{RawTransaction, SignedTransaction};
 use serde::{Deserialize, Serialize};
 
 /// Request for an account's currency balance either now, or historically
@@ -57,6 +58,14 @@ pub struct BlockRequest {
     /// A set of search parameters (latest, by hash, or by index)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub block_identifier: Option<PartialBlockIdentifier>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<BlockRequestMetadata>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct BlockRequestMetadata {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_empty_transactions: Option<bool>,
 }
 
 impl BlockRequest {
@@ -64,6 +73,7 @@ impl BlockRequest {
         Self {
             network_identifier: chain_id.into(),
             block_identifier,
+            metadata: None,
         }
     }
 
@@ -77,6 +87,13 @@ impl BlockRequest {
 
     pub fn by_index(chain_id: ChainId, index: u64) -> Self {
         Self::new(chain_id, Some(PartialBlockIdentifier::block_index(index)))
+    }
+
+    pub fn with_empty_transactions(mut self) -> Self {
+        self.metadata = Some(BlockRequestMetadata {
+            keep_empty_transactions: Some(true),
+        });
+        self
     }
 }
 
@@ -244,6 +261,16 @@ pub struct ConstructionParseResponse {
     /// The signers of the transaction, if it was a [`aptos_types::transaction::SignedTransaction`]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_identifier_signers: Option<Vec<AccountIdentifier>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<ConstructionParseMetadata>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ConstructionParseMetadata {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unsigned_transaction: Option<RawTransaction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signed_transaction: Option<SignedTransaction>,
 }
 
 /// Request to build payloads from the operations to sign

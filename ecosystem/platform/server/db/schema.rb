@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.0].define(version: 2022_09_06_031531) do
+ActiveRecord::Schema[7.0].define(version: 2022_09_16_125743) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pgcrypto"
   enable_extension "plpgsql"
@@ -367,6 +367,7 @@ ActiveRecord::Schema[7.0].define(version: 2022_09_06_031531) do
     t.boolean "public", null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.boolean "verified", default: false, null: false
     t.index ["user_id"], name: "index_projects_on_user_id"
   end
 
@@ -398,13 +399,13 @@ ActiveRecord::Schema[7.0].define(version: 2022_09_06_031531) do
     t.string "completed_persona_inquiry_id"
     t.integer "discourse_id"
     t.string "bio"
+    t.index "lower((username)::text)", name: "index_users_on_lower_username", unique: true
     t.index ["confirmation_token"], name: "index_users_on_confirmation_token", unique: true
     t.index ["current_sign_in_ip"], name: "index_users_on_current_sign_in_ip"
     t.index ["email"], name: "index_users_on_email", unique: true
     t.index ["external_id"], name: "index_users_on_external_id"
     t.index ["last_sign_in_ip"], name: "index_users_on_last_sign_in_ip"
     t.index ["reset_password_token"], name: "index_users_on_reset_password_token", unique: true
-    t.index ["username"], name: "index_users_on_username", unique: true
   end
 
   create_table "wallets", force: :cascade do |t|
@@ -415,7 +416,7 @@ ActiveRecord::Schema[7.0].define(version: 2022_09_06_031531) do
     t.string "address", null: false, comment: "The account address."
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
-    t.index ["public_key", "network"], name: "index_wallets_on_public_key_and_network", unique: true
+    t.index ["public_key", "network", "wallet_name"], name: "index_wallets_on_public_key_and_network_and_wallet_name", unique: true
     t.index ["user_id"], name: "index_wallets_on_user_id"
     t.check_constraint "public_key::text ~ '^0x[0-9a-f]{64}$'::text"
   end

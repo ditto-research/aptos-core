@@ -165,7 +165,7 @@ impl Service {
         Service {
             faucet_account: Mutex::new(faucet_account),
             transaction_factory: TransactionFactory::new(chain_id)
-                .with_gas_unit_price(1)
+                .with_gas_unit_price(std::cmp::max(1, aptos_global_constants::GAS_UNIT_PRICE))
                 .with_transaction_expiration_time(30),
             client,
             endpoint,
@@ -195,8 +195,12 @@ pub fn routes(
     health
         .or(mint)
         .with(warp::log::custom(|info| {
+            let actual_ip = info
+                .request_headers()
+                .get("x-forwarded-for")
+                .map(|inner| inner.to_str().unwrap_or("-"));
             info!(
-                "{} \"{} {} {:?}\" {} \"{}\" \"{}\" {:?}",
+                "{} \"{} {} {:?}\" {} \"{}\" \"{}\" \"{}\" {:?}",
                 OptFmt(info.remote_addr()),
                 info.method(),
                 info.path(),
@@ -204,6 +208,7 @@ pub fn routes(
                 info.status().as_u16(),
                 OptFmt(info.referer()),
                 OptFmt(info.user_agent()),
+                OptFmt(actual_ip),
                 info.elapsed(),
             )
         }))

@@ -15,6 +15,7 @@ use crate::common::types::{ProfileOptions, RestOptions};
 use crate::common::utils::{
     create_dir_if_not_exist, dir_default_to_current, prompt_yes_with_override, write_to_file,
 };
+use crate::governance::CompileScriptFunction;
 use crate::move_tool::manifest::{
     Dependency, ManifestNamedAddress, MovePackageManifest, PackageInfo,
 };
@@ -33,7 +34,9 @@ use aptos_module_verifier::module_init::verify_module_init_function;
 use aptos_rest_client::aptos_api_types::MoveType;
 use aptos_transactional_test_harness::run_aptos_test;
 use aptos_types::account_address::AccountAddress;
-use aptos_types::transaction::{EntryFunction, ModuleBundle, TransactionPayload};
+use aptos_types::transaction::{
+    EntryFunction, ModuleBundle, Script, TransactionArgument, TransactionPayload,
+};
 use async_trait::async_trait;
 use clap::{ArgEnum, Parser, Subcommand};
 use framework::natives::code::UpgradePolicy;
@@ -75,6 +78,7 @@ pub enum MoveTool {
     List(ListPackage),
     Clean(CleanPackage),
     Run(RunFunction),
+    RunScript(RunScript),
     Test(TestPackage),
     Prove(ProvePackage),
     TransactionalTest(TransactionalTestOpts),
@@ -90,10 +94,92 @@ impl MoveTool {
             MoveTool::List(tool) => tool.execute_serialized().await,
             MoveTool::Clean(tool) => tool.execute_serialized().await,
             MoveTool::Run(tool) => tool.execute_serialized().await,
+            MoveTool::RunScript(tool) => tool.execute_serialized().await,
             MoveTool::Test(tool) => tool.execute_serialized().await,
             MoveTool::Prove(tool) => tool.execute_serialized().await,
             MoveTool::TransactionalTest(tool) => tool.execute_serialized_success().await,
         }
+    }
+}
+
+#[derive(Parser)]
+pub struct FrameworkPackageArgs {
+    /// Git revision or branch for the Aptos framework
+    #[clap(long, group = "framework_package_args")]
+    pub(crate) framework_git_rev: Option<String>,
+
+    /// Use a local framework directory
+    #[clap(long, parse(from_os_str), group = "framework_package_args")]
+    pub(crate) framework_local_dir: Option<PathBuf>,
+}
+
+impl FrameworkPackageArgs {
+    pub fn init_move_dir(
+        &self,
+        package_dir: &Path,
+        name: &str,
+        addresses: BTreeMap<String, ManifestNamedAddress>,
+        prompt_options: PromptOptions,
+    ) -> CliTypedResult<()> {
+        const APTOS_FRAMEWORK: &str = "AptosFramework";
+        const APTOS_GIT_PATH: &str = "https://github.com/aptos-labs/aptos-core.git";
+        const SUBDIR_PATH: &str = "aptos-move/framework/aptos-framework";
+        const DEFAULT_BRANCH: &str = "main";
+
+        let move_toml = package_dir.join(SourcePackageLayout::Manifest.path());
+        check_if_file_exists(move_toml.as_path(), prompt_options)?;
+        create_dir_if_not_exist(
+            package_dir
+                .join(SourcePackageLayout::Sources.path())
+                .as_path(),
+        )?;
+
+        // Add the framework dependency if it's provided
+        let mut dependencies = BTreeMap::new();
+        if let Some(ref path) = self.framework_local_dir {
+            dependencies.insert(
+                APTOS_FRAMEWORK.to_string(),
+                Dependency {
+                    local: Some(path.display().to_string()),
+                    git: None,
+                    rev: None,
+                    subdir: None,
+                    aptos: None,
+                    address: None,
+                },
+            );
+        } else {
+            let git_rev = self.framework_git_rev.as_deref().unwrap_or(DEFAULT_BRANCH);
+            dependencies.insert(
+                APTOS_FRAMEWORK.to_string(),
+                Dependency {
+                    local: None,
+                    git: Some(APTOS_GIT_PATH.to_string()),
+                    rev: Some(git_rev.to_string()),
+                    subdir: Some(SUBDIR_PATH.to_string()),
+                    aptos: None,
+                    address: None,
+                },
+            );
+        }
+
+        let manifest = MovePackageManifest {
+            package: PackageInfo {
+                name: name.to_string(),
+                version: "1.0.0".to_string(),
+                author: None,
+            },
+            addresses,
+            dependencies,
+        };
+
+        write_to_file(
+            move_toml.as_path(),
+            SourcePackageLayout::Manifest.location_str(),
+            toml::to_string_pretty(&manifest)
+                .map_err(|err| CliError::UnexpectedError(err.to_string()))?
+                .as_bytes(),
+        )
     }
 }
 
@@ -119,9 +205,8 @@ pub struct InitPackage {
     #[clap(flatten)]
     pub(crate) prompt_options: PromptOptions,
 
-    /// For test: use the given local reference to the aptos framework
-    #[clap(skip)]
-    pub(crate) for_test_framework: Option<PathBuf>,
+    #[clap(flatten)]
+    pub(crate) framework_package_args: FrameworkPackageArgs,
 }
 
 #[async_trait]
@@ -138,78 +223,13 @@ impl CliCommand<()> for InitPackage {
             .map(|(key, value)| (key, value.account_address.into()))
             .collect();
 
-        init_move_dir(
+        self.framework_package_args.init_move_dir(
             package_dir.as_path(),
             &self.name,
-            Some("main".to_string()),
             addresses,
             self.prompt_options,
-            self.for_test_framework,
         )
     }
-}
-
-pub fn init_move_dir(
-    package_dir: &Path,
-    name: &str,
-    rev: Option<String>,
-    addresses: BTreeMap<String, ManifestNamedAddress>,
-    prompt_options: PromptOptions,
-    for_test_framework: Option<PathBuf>,
-) -> CliTypedResult<()> {
-    let move_toml = package_dir.join(SourcePackageLayout::Manifest.path());
-    check_if_file_exists(move_toml.as_path(), prompt_options)?;
-    create_dir_if_not_exist(
-        package_dir
-            .join(SourcePackageLayout::Sources.path())
-            .as_path(),
-    )?;
-
-    // Add the framework dependency if it's provided
-    let mut dependencies = BTreeMap::new();
-    if let Some(path) = for_test_framework {
-        dependencies.insert(
-            "AptosFramework".to_string(),
-            Dependency {
-                local: Some(path.display().to_string()),
-                git: None,
-                rev: None,
-                subdir: None,
-                aptos: None,
-                address: None,
-            },
-        );
-    } else if let Some(rev) = rev {
-        dependencies.insert(
-            "AptosFramework".to_string(),
-            Dependency {
-                local: None,
-                git: Some("https://github.com/aptos-labs/aptos-core.git".to_string()),
-                rev: Some(rev),
-                subdir: Some("aptos-move/framework/aptos-framework".to_string()),
-                aptos: None,
-                address: None,
-            },
-        );
-    }
-
-    let manifest = MovePackageManifest {
-        package: PackageInfo {
-            name: name.to_string(),
-            version: "1.0.0".to_string(),
-            author: None,
-        },
-        addresses,
-        dependencies,
-    };
-
-    write_to_file(
-        move_toml.as_path(),
-        SourcePackageLayout::Manifest.location_str(),
-        toml::to_string_pretty(&manifest)
-            .map_err(|err| CliError::UnexpectedError(err.to_string()))?
-            .as_bytes(),
-    )
 }
 
 /// Compiles a package and returns the [`ModuleId`]s
@@ -509,10 +529,9 @@ impl CliCommand<TransactionSummary> for PublishPackage {
         if legacy_flow {
             // Send the compiled module using a module bundle
             txn_options
-                .submit_transaction(
-                    TransactionPayload::ModuleBundle(ModuleBundle::new(compiled_units)),
-                    None,
-                )
+                .submit_transaction(TransactionPayload::ModuleBundle(ModuleBundle::new(
+                    compiled_units,
+                )))
                 .await
                 .map(TransactionSummary::from)
         } else {
@@ -533,7 +552,7 @@ impl CliCommand<TransactionSummary> for PublishPackage {
                 )));
             }
             txn_options
-                .submit_transaction(payload, None)
+                .submit_transaction(payload)
                 .await
                 .map(TransactionSummary::from)
         }
@@ -713,7 +732,7 @@ pub struct RunFunction {
 
     /// Arguments combined with their type separated by spaces.
     ///
-    /// Supported types [u8, u64, u128, bool, hex, string, address]
+    /// Supported types [u8, u64, u128, bool, hex, string, address, raw]
     ///
     /// Example: `address:0x1 bool:true u8:0`
     #[clap(long, multiple_values = true)]
@@ -751,17 +770,58 @@ impl CliCommand<TransactionSummary> for RunFunction {
         }
 
         self.txn_options
-            .submit_transaction(
-                TransactionPayload::EntryFunction(EntryFunction::new(
-                    self.function_id.module_id,
-                    self.function_id.member_id,
-                    type_args,
-                    args,
-                )),
-                None,
-            )
+            .submit_transaction(TransactionPayload::EntryFunction(EntryFunction::new(
+                self.function_id.module_id,
+                self.function_id.member_id,
+                type_args,
+                args,
+            )))
             .await
             .map(TransactionSummary::from)
+    }
+}
+
+/// Run a Move script
+#[derive(Parser)]
+pub struct RunScript {
+    #[clap(flatten)]
+    pub(crate) txn_options: TransactionOptions,
+    #[clap(flatten)]
+    pub(crate) compile_proposal_args: CompileScriptFunction,
+    /// Arguments combined with their type separated by spaces.
+    ///
+    /// Supported types [u8, u64, u128, bool, hex, string, address, raw]
+    ///
+    /// Example: `address:0x1 bool:true u8:0`
+    #[clap(long, multiple_values = true)]
+    pub(crate) args: Vec<ArgWithType>,
+}
+
+#[async_trait]
+impl CliCommand<TransactionSummary> for RunScript {
+    fn command_name(&self) -> &'static str {
+        "RunScript"
+    }
+
+    async fn execute(self) -> CliTypedResult<TransactionSummary> {
+        let (bytecode, _script_hash) = self
+            .compile_proposal_args
+            .compile("RunScript", self.txn_options.prompt_options)?;
+
+        let mut args: Vec<TransactionArgument> = vec![];
+        for arg in self.args {
+            args.push(arg.try_into()?);
+        }
+
+        let txn = self
+            .txn_options
+            .submit_transaction(TransactionPayload::Script(Script::new(
+                bytecode,
+                vec![],
+                args,
+            )))
+            .await?;
+        Ok(TransactionSummary::from(&txn))
     }
 }
 
@@ -774,6 +834,7 @@ pub(crate) enum FunctionArgType {
     U8,
     U64,
     U128,
+    Raw,
 }
 
 impl FunctionArgType {
@@ -802,6 +863,11 @@ impl FunctionArgType {
                 &u128::from_str(arg)
                     .map_err(|err| CliError::UnableToParse("u128", err.to_string()))?,
             ),
+            FunctionArgType::Raw => {
+                let raw = hex::decode(arg)
+                    .map_err(|err| CliError::UnableToParse("raw", err.to_string()))?;
+                Ok(raw)
+            }
         }
         .map_err(|err| CliError::BCS("arg", err))
     }
@@ -818,7 +884,8 @@ impl FromStr for FunctionArgType {
             "u8" => Ok(FunctionArgType::U8),
             "u64" => Ok(FunctionArgType::U64),
             "u128" => Ok(FunctionArgType::U128),
-            str => Err(CliError::CommandArgumentError(format!("Invalid arg type '{}'.  Must be one of: ['address','bool','hex','string','u8','u64','u128']", str))),
+            "raw" => Ok(FunctionArgType::Raw),
+            str => Err(CliError::CommandArgumentError(format!("Invalid arg type '{}'.  Must be one of: ['address','bool','hex','string','u8','u64','u128','raw']", str))),
         }
     }
 }
@@ -846,6 +913,42 @@ impl FromStr for ArgWithType {
 
         Ok(ArgWithType { _ty: ty, arg })
     }
+}
+
+impl TryInto<TransactionArgument> for ArgWithType {
+    type Error = CliError;
+
+    fn try_into(self) -> Result<TransactionArgument, Self::Error> {
+        match self._ty {
+            FunctionArgType::Address => Ok(TransactionArgument::Address(txn_arg_parser(
+                &self.arg, "address",
+            )?)),
+            FunctionArgType::Bool => Ok(TransactionArgument::Bool(txn_arg_parser(
+                &self.arg, "bool",
+            )?)),
+            FunctionArgType::Hex => Ok(TransactionArgument::U8Vector(txn_arg_parser(
+                &self.arg, "hex",
+            )?)),
+            FunctionArgType::String => Ok(TransactionArgument::U8Vector(txn_arg_parser(
+                &self.arg, "string",
+            )?)),
+            FunctionArgType::U8 => Ok(TransactionArgument::U8(txn_arg_parser(&self.arg, "u8")?)),
+            FunctionArgType::U64 => Ok(TransactionArgument::U64(txn_arg_parser(&self.arg, "u64")?)),
+            FunctionArgType::U128 => Ok(TransactionArgument::U128(txn_arg_parser(
+                &self.arg, "u128",
+            )?)),
+            FunctionArgType::Raw => Ok(TransactionArgument::U8Vector(txn_arg_parser(
+                &self.arg, "raw",
+            )?)),
+        }
+    }
+}
+
+fn txn_arg_parser<T: serde::de::DeserializeOwned>(
+    data: &[u8],
+    label: &'static str,
+) -> Result<T, CliError> {
+    bcs::from_bytes(data).map_err(|err| CliError::UnableToParse(label, err.to_string()))
 }
 
 /// Identifier of a module member (function or struct).

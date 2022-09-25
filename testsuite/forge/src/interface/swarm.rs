@@ -1,9 +1,9 @@
 // Copyright (c) Aptos
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::interface::system_metrics::SystemMetricsThreshold;
 use crate::{
-    AptosPublicInfo, ChainInfo, FullNode, NodeExt, Result, SwarmChaos, Validator, Version,
+    interface::system_metrics::SystemMetricsThreshold, AptosPublicInfo, ChainInfo, FullNode,
+    NodeExt, Result, SwarmChaos, Validator, Version,
 };
 use anyhow::{anyhow, bail};
 use aptos_config::config::NodeConfig;
@@ -79,6 +79,7 @@ pub trait Swarm: Sync {
     /// Injects all types of chaos
     fn inject_chaos(&mut self, chaos: SwarmChaos) -> Result<()>;
     fn remove_chaos(&mut self, chaos: SwarmChaos) -> Result<()>;
+    fn remove_all_chaos(&mut self) -> Result<()>;
 
     async fn ensure_no_validator_restart(&self) -> Result<()>;
     async fn ensure_no_fullnode_restart(&self) -> Result<()>;
@@ -100,6 +101,12 @@ pub trait Swarm: Sync {
 
     fn aptos_public_info(&mut self) -> AptosPublicInfo<'_> {
         self.chain_info().into_aptos_public_info()
+    }
+
+    fn chain_info_for_node(&mut self, idx: usize) -> ChainInfo<'_>;
+
+    fn aptos_public_info_for_node(&mut self, idx: usize) -> AptosPublicInfo<'_> {
+        self.chain_info_for_node(idx).into_aptos_public_info()
     }
 }
 
@@ -252,6 +259,13 @@ pub trait SwarmExt: Swarm {
         wait_for_all_nodes_to_catchup(&self.get_all_nodes_clients_with_names(), timeout).await
     }
 
+    async fn wait_for_all_nodes_to_catchup_to_next(&self, timeout: Duration) -> Result<()> {
+        let clients = self.get_all_nodes_clients_with_names();
+        let highest_synced_version = get_highest_synced_version(&clients).await?;
+        wait_for_all_nodes_to_catchup_to_version(&clients, highest_synced_version + 1, timeout)
+            .await
+    }
+
     fn get_validator_clients_with_names(&self) -> Vec<(String, RestClient)> {
         self.validators()
             .map(|node| (node.name().to_string(), node.rest_client()))
@@ -265,6 +279,21 @@ pub trait SwarmExt: Swarm {
                 self.full_nodes()
                     .map(|node| (node.name().to_string(), node.rest_client())),
             )
+            .collect()
+    }
+
+    fn get_clients_for_peers(&self, peers: &[PeerId], client_timeout: Duration) -> Vec<RestClient> {
+        peers
+            .iter()
+            .map(|peer| {
+                self.validator(*peer)
+                    .map(|n| n.rest_client_with_timeout(client_timeout))
+                    .unwrap_or_else(|| {
+                        self.full_node(*peer)
+                            .unwrap()
+                            .rest_client_with_timeout(client_timeout)
+                    })
+            })
             .collect()
     }
 }

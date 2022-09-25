@@ -1,20 +1,50 @@
 // Copyright (c) Aptos
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{auth::with_auth, context::Context, types::auth::Claims};
-use aptos_config::config::PeerRole;
-use aptos_logger::{debug, error};
-use reqwest::StatusCode;
+use crate::{
+    auth::with_auth,
+    constants::MAX_CONTENT_LENGTH,
+    context::Context,
+    types::{auth::Claims, common::NodeType},
+};
+use reqwest::{header::CONTENT_ENCODING, StatusCode};
+use tracing::{debug, error};
 use warp::{filters::BoxedFilter, hyper::body::Bytes, reply, Filter, Rejection, Reply};
 
-pub fn metrics_ingest(context: Context) -> BoxedFilter<(impl Reply,)> {
+/// TODO: Cleanup after v1 API is ramped up
+pub fn metrics_ingest_legacy(context: Context) -> BoxedFilter<(impl Reply,)> {
     warp::path!("push-metrics")
         .and(warp::post())
         .and(context.clone().filter())
         .and(with_auth(
             context,
-            vec![PeerRole::Validator, PeerRole::ValidatorFullNode],
+            vec![
+                NodeType::Validator,
+                NodeType::ValidatorFullNode,
+                NodeType::PublicFullNode,
+            ],
         ))
+        .and(warp::header::optional(CONTENT_ENCODING.as_str()))
+        .and(warp::body::content_length_limit(MAX_CONTENT_LENGTH))
+        .and(warp::body::bytes())
+        .and_then(handle_metrics_ingest)
+        .boxed()
+}
+
+pub fn metrics_ingest(context: Context) -> BoxedFilter<(impl Reply,)> {
+    warp::path!("ingest" / "metrics")
+        .and(warp::post())
+        .and(context.clone().filter())
+        .and(with_auth(
+            context,
+            vec![
+                NodeType::Validator,
+                NodeType::ValidatorFullNode,
+                NodeType::PublicFullNode,
+            ],
+        ))
+        .and(warp::header::optional(CONTENT_ENCODING.as_str()))
+        .and(warp::body::content_length_limit(MAX_CONTENT_LENGTH))
         .and(warp::body::bytes())
         .and_then(handle_metrics_ingest)
         .boxed()
@@ -23,14 +53,16 @@ pub fn metrics_ingest(context: Context) -> BoxedFilter<(impl Reply,)> {
 pub async fn handle_metrics_ingest(
     context: Context,
     claims: Claims,
+    encoding: Option<String>,
     metrics_body: Bytes,
 ) -> anyhow::Result<impl Reply, Rejection> {
+    debug!("handling prometheus metrics ingest");
+
     let extra_labels = claims_to_extra_labels(&claims);
 
     let res = context
-        .victoria_metrics_client
-        .unwrap()
-        .post_prometheus_metrics(metrics_body, extra_labels)
+        .metrics_client()
+        .post_prometheus_metrics(metrics_body, extra_labels, encoding.unwrap_or_default())
         .await;
 
     match res {
@@ -54,7 +86,7 @@ pub async fn handle_metrics_ingest(
 
 fn claims_to_extra_labels(claims: &Claims) -> Vec<String> {
     vec![
-        format!("role={}", claims.peer_role),
+        format!("role={}", claims.node_type),
         format!("chain_name={}", claims.chain_id),
         format!("namespace={}", "telemetry-service"),
         // for community nodes we cannot determine which pod name they run in (or whether they run in k8s at all), so we use the peer id as an approximation/replacement for pod_name
@@ -77,7 +109,7 @@ mod test {
         let claims = claims_to_extra_labels(&super::Claims {
             chain_id: ChainId::new(25),
             peer_id: PeerId::from_str("0x1").unwrap(),
-            peer_role: PeerRole::Validator,
+            node_type: NodeType::Validator,
             epoch: 3,
             exp: 123,
             iat: 123,

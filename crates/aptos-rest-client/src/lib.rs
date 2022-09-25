@@ -1,11 +1,12 @@
 // Copyright (c) Aptos
 // SPDX-License-Identifier: Apache-2.0
 
+extern crate core;
+
 pub mod aptos;
 pub mod error;
 pub mod faucet;
 
-use aptos_api_types::TransactionsBatchSubmissionResult;
 pub use faucet::FaucetClient;
 pub mod response;
 pub use response::Response;
@@ -16,36 +17,37 @@ pub use aptos_api_types::{
     self, IndexResponse, MoveModuleBytecode, PendingTransaction, Transaction,
 };
 pub use state::State;
-pub use types::{Account, Resource};
+pub use types::{deserialize_from_prefixed_hex_string, Account, Resource};
 
 use crate::aptos::{AptosVersion, Balance};
 use crate::error::RestError;
 use anyhow::{anyhow, Result};
-use aptos_api_types::mime_types::BCS;
 use aptos_api_types::{
-    mime_types::BCS_SIGNED_TRANSACTION as BCS_CONTENT_TYPE, AptosError, BcsBlock, Block,
-    GasEstimation, HexEncodedBytes, MoveModuleId, TransactionData, TransactionOnChainData,
+    deserialize_from_string,
+    mime_types::{BCS, BCS_SIGNED_TRANSACTION as BCS_CONTENT_TYPE},
+    AptosError, BcsBlock, Block, Bytecode, ExplainVMStatus, GasEstimation, HexEncodedBytes,
+    MoveModuleId, TransactionData, TransactionOnChainData, TransactionsBatchSubmissionResult,
     UserTransaction, VersionedEvent,
 };
 use aptos_crypto::HashValue;
-use aptos_types::account_config::{AccountResource, CoinStoreResource};
-use aptos_types::contract_event::EventWithVersion;
-use aptos_types::transaction::ExecutionStatus;
 use aptos_types::{
     account_address::AccountAddress,
-    account_config::{NewBlockEvent, CORE_CODE_ADDRESS},
-    transaction::SignedTransaction,
+    account_config::{AccountResource, CoinStoreResource, NewBlockEvent, CORE_CODE_ADDRESS},
+    contract_event::EventWithVersion,
+    transaction::{ExecutionStatus, SignedTransaction},
 };
-use move_deps::move_core_types::language_storage::StructTag;
+use futures::executor::block_on;
+use move_deps::move_binary_format::CompiledModule;
+use move_deps::move_core_types::language_storage::{ModuleId, StructTag};
 use reqwest::header::ACCEPT;
 use reqwest::{header::CONTENT_TYPE, Client as ReqwestClient, StatusCode};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::rc::Rc;
 use std::time::Duration;
 use tokio::time::Instant;
-use types::{deserialize_from_prefixed_hex_string, deserialize_from_string};
 use url::Url;
 
 pub const USER_AGENT: &str = concat!("aptos-client-sdk-rust / ", env!("CARGO_PKG_VERSION"));
@@ -147,6 +149,54 @@ impl Client {
         ))?;
         let response = self.get_bcs(url).await?;
         Ok(response.and_then(|inner| bcs::from_bytes(&inner))?)
+    }
+
+    /// This will get all the transactions from the block in successive calls
+    /// and will handle the successive calls
+    ///
+    /// Note: This could take a long time to run
+    pub async fn get_full_block_by_height_bcs(
+        &self,
+        height: u64,
+        page_size: u16,
+    ) -> AptosResult<Response<BcsBlock>> {
+        let (mut block, state) = self
+            .get_block_by_height_bcs(height, true)
+            .await?
+            .into_parts();
+
+        let mut current_version = block.first_version;
+
+        // Set the current version to the last known transaction
+        if let Some(ref txns) = block.transactions {
+            if let Some(txn) = txns.last() {
+                current_version = txn.version + 1;
+            }
+        } else {
+            return Err(RestError::Unknown(anyhow!(
+                "No transactions were returned in the block"
+            )));
+        }
+
+        // Add in all transactions by paging through the other transactions
+        while current_version <= block.last_version {
+            let page_end_version =
+                std::cmp::min(block.last_version, current_version + page_size as u64 - 1);
+
+            let transactions = self
+                .get_transactions_bcs(
+                    Some(current_version),
+                    Some((page_end_version - current_version + 1) as u16),
+                )
+                .await?
+                .into_inner();
+            if let Some(txn) = transactions.last() {
+                current_version = txn.version + 1;
+            };
+            block.transactions.as_mut().unwrap().extend(transactions);
+        }
+
+        Ok(Response::new(block, state))
     }
 
     pub async fn get_block_by_version(
@@ -277,6 +327,31 @@ impl Client {
     ) -> AptosResult<Response<TransactionOnChainData>> {
         let txn_payload = bcs::to_bytes(txn)?;
         let url = self.build_path("transactions/simulate")?;
+
+        let response = self
+            .inner
+            .post(url)
+            .header(CONTENT_TYPE, BCS_CONTENT_TYPE)
+            .header(ACCEPT, BCS)
+            .body(txn_payload)
+            .send()
+            .await?;
+
+        let response = self.check_and_parse_bcs_response(response).await?;
+        Ok(response.and_then(|bytes| bcs::from_bytes(&bytes))?)
+    }
+
+    pub async fn simulate_bcs_with_gas_estimation(
+        &self,
+        txn: &SignedTransaction,
+        estimate_max_gas_amount: bool,
+        estimate_max_gas_unit_price: bool,
+    ) -> AptosResult<Response<TransactionOnChainData>> {
+        let txn_payload = bcs::to_bytes(txn)?;
+        let url = self.build_path(&format!(
+            "transactions/simulate?estimate_max_gas_amount={}&estimate_gas_unit_price={}",
+            estimate_max_gas_amount, estimate_max_gas_unit_price
+        ))?;
 
         let response = self
             .inner
@@ -862,7 +937,7 @@ impl Client {
         Ok(response.and_then(|inner| bcs::from_bytes(&inner))?)
     }
 
-    pub async fn get_new_block_events(
+    pub async fn get_new_block_events_bcs(
         &self,
         start: Option<u64>,
         limit: Option<u16>,
@@ -885,7 +960,7 @@ impl Client {
         }
 
         let response = self
-            .get_account_events(
+            .get_account_events_bcs(
                 CORE_CODE_ADDRESS,
                 "0x1::block::BlockResource",
                 "new_block_events",
@@ -898,32 +973,14 @@ impl Client {
             let new_events: Result<Vec<_>> = events
                 .into_iter()
                 .map(|event| {
-                    let version = event.version.into();
-                    let sequence_number = event.sequence_number.into();
-                    serde_json::from_value::<NewBlockEventResponse>(event.data)
-                        .map_err(|e| anyhow!(e))
-                        .and_then(|e| {
-                            assert_eq!(e.height, sequence_number);
-                            Ok(VersionedNewBlockEvent {
-                                event: NewBlockEvent::new(
-                                    AccountAddress::from_hex_literal(&e.hash)
-                                        .map_err(|e| anyhow!(e))?,
-                                    e.epoch,
-                                    e.round,
-                                    e.height,
-                                    e.previous_block_votes_bitvec.0,
-                                    AccountAddress::from_hex_literal(&e.proposer)
-                                        .map_err(|e| anyhow!(e))?,
-                                    e.failed_proposer_indices
-                                        .iter()
-                                        .map(|v| v.parse())
-                                        .collect::<Result<Vec<_>, _>>()?,
-                                    e.time_microseconds,
-                                ),
-                                version,
-                                sequence_number,
-                            })
-                        })
+                    let version = event.transaction_version;
+                    let sequence_number = event.event.sequence_number();
+
+                    Ok(VersionedNewBlockEvent {
+                        event: bcs::from_bytes(event.event.event_data())?,
+                        version,
+                        sequence_number,
+                    })
                 })
                 .collect();
             new_events
@@ -932,7 +989,7 @@ impl Client {
 
     pub async fn get_table_item<K: Serialize>(
         &self,
-        table_handle: u128,
+        table_handle: AccountAddress,
         key_type: &str,
         value_type: &str,
         key: K,
@@ -946,6 +1003,24 @@ impl Client {
 
         let response = self.inner.post(url).json(&data).send().await?;
         self.json(response).await
+    }
+
+    pub async fn get_table_item_bcs<K: Serialize, T: DeserializeOwned>(
+        &self,
+        table_handle: AccountAddress,
+        key_type: &str,
+        value_type: &str,
+        key: K,
+    ) -> AptosResult<Response<T>> {
+        let url = self.build_path(&format!("tables/{}/item", table_handle))?;
+        let data = json!({
+            "key_type": key_type,
+            "value_type": value_type,
+            "key": json!(key),
+        });
+
+        let response = self.post_bcs(url, data).await?;
+        Ok(response.and_then(|inner| bcs::from_bytes(&inner))?)
     }
 
     pub async fn get_account(&self, address: AccountAddress) -> AptosResult<Response<Account>> {
@@ -1035,6 +1110,21 @@ impl Client {
         self.check_and_parse_bcs_response(response).await
     }
 
+    async fn post_bcs(
+        &self,
+        url: Url,
+        data: serde_json::Value,
+    ) -> AptosResult<Response<bytes::Bytes>> {
+        let response = self
+            .inner
+            .post(url)
+            .header(ACCEPT, BCS)
+            .json(&data)
+            .send()
+            .await?;
+        self.check_and_parse_bcs_response(response).await
+    }
+
     async fn get_bcs_with_page(
         &self,
         url: Url,
@@ -1088,7 +1178,7 @@ impl Client {
                     RestError::Api(inner) => {
                         should_retry(inner.status_code, Some(inner.error.clone()))
                     }
-                    RestError::Http(inner) => should_retry(*inner, None),
+                    RestError::Http(status_code, _e) => should_retry(*status_code, None),
                     RestError::Bcs(_)
                     | RestError::Json(_)
                     | RestError::Timeout(_)
@@ -1166,6 +1256,23 @@ async fn parse_error(response: reqwest::Response) -> RestError {
     let maybe_state = parse_state_optional(&response);
     match response.json::<AptosError>().await {
         Ok(error) => (error, maybe_state, status_code).into(),
-        Err(_) => RestError::Http(status_code),
+        Err(e) => RestError::Http(status_code, e),
+    }
+}
+
+pub struct GasEstimationParams {
+    pub estimated_gas_used: u64,
+    pub estimated_gas_price: u64,
+}
+
+impl ExplainVMStatus for Client {
+    // TODO: Add some caching
+    fn get_module_bytecode(&self, module_id: &ModuleId) -> Result<Rc<dyn Bytecode>> {
+        let bytes =
+            block_on(self.get_account_module_bcs(*module_id.address(), module_id.name().as_str()))?
+                .into_inner();
+
+        let compiled_module = CompiledModule::deserialize(bytes.as_ref())?;
+        Ok(Rc::new(compiled_module) as Rc<dyn Bytecode>)
     }
 }

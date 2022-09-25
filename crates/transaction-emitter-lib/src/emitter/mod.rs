@@ -5,10 +5,11 @@ pub mod account_minter;
 pub mod stats;
 pub mod submission_worker;
 
-use ::aptos_logger::*;
 use again::RetryPolicy;
 use anyhow::{anyhow, format_err, Result};
 use aptos_infallible::RwLock;
+use aptos_logger::sample::Sampling;
+use aptos_logger::{debug, error, info, sample, sample::SampleRate, warn};
 use aptos_rest_client::Client as RestClient;
 use aptos_sdk::{
     move_types::account_address::AccountAddress,
@@ -33,7 +34,11 @@ use tokio::{runtime::Handle, task::JoinHandle, time};
 
 use crate::{
     args::TransactionType,
-    emitter::{account_minter::AccountMinter, submission_worker::SubmissionWorker},
+    emitter::{
+        account_minter::AccountMinter,
+        stats::{DynamicStatsTracking, TxnStats},
+        submission_worker::SubmissionWorker,
+    },
     transaction_generator::{
         account_generator::AccountGeneratorCreator, nft_mint::NFTMintGeneratorCreator,
         p2p_transaction_generator::P2PTransactionGeneratorCreator,
@@ -42,19 +47,18 @@ use crate::{
 };
 use aptos_sdk::transaction_builder::aptos_stdlib;
 use rand::rngs::StdRng;
-use stats::{StatsAccumulator, TxnStats};
 
 // Max is 100k TPS for a full day.
 const MAX_TXNS: u64 = 100_000_000_000;
 const SEND_AMOUNT: u64 = 1;
-const GAS_AMOUNT: u64 = 1000;
+const GAS_AMOUNT: u64 = aptos_global_constants::MAX_GAS_AMOUNT;
 
 // This retry policy is used for important client calls necessary for setting
 // up the test (e.g. account creation) and collecting its results (e.g. checking
 // account sequence numbers). If these fail, the whole test fails. We do not use
 // this for submitting transactions, as we have a way to handle when that fails.
 // This retry policy means an operation will take 8 seconds at most.
-static RETRY_POLICY: Lazy<RetryPolicy> = Lazy::new(|| {
+pub static RETRY_POLICY: Lazy<RetryPolicy> = Lazy::new(|| {
     RetryPolicy::exponential(Duration::from_millis(125))
         .with_max_retries(6)
         .with_jitter(true)
@@ -74,6 +78,7 @@ pub struct EmitModeParams {
     pub start_jitter_millis: u64,
     pub wait_millis: u64,
     pub check_account_sequence_only_once_fraction: f32,
+    pub check_account_sequence_sleep_millis: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -125,7 +130,7 @@ impl Default for EmitJobRequest {
             mode: EmitJobMode::MaxLoad {
                 mempool_backlog: 3000,
             },
-            gas_price: 0,
+            gas_price: aptos_global_constants::GAS_UNIT_PRICE,
             invalid_transaction_ratio: 0,
             reuse_accounts: false,
             mint_to_root: false,
@@ -200,7 +205,7 @@ impl EmitJobRequest {
                 // The target mempool backlog is set to be 3x of the target TPS because of the on an average,
                 // we can ~3 blocks in consensus queue. As long as we have 3x the target TPS as backlog,
                 // it should be enough to produce the target TPS.
-                let transactions_per_account = 5;
+                let transactions_per_account = 20;
                 let num_workers_per_endpoint = max(
                     mempool_backlog / (clients_count * transactions_per_account),
                     1,
@@ -226,6 +231,7 @@ impl EmitJobRequest {
                     accounts_per_worker: 1,
                     workers_per_endpoint: num_workers_per_endpoint,
                     check_account_sequence_only_once_fraction: 0.0,
+                    check_account_sequence_sleep_millis: 300,
                 }
             }
             EmitJobMode::ConstTps { tps } => {
@@ -276,9 +282,16 @@ impl EmitJobRequest {
                     transactions_per_account, wait_seconds
                 );
 
+                // sample latency on 2% of requests, or at least once every 5s.
+                let sample_latency_fraction = 1.0_f32.min(0.02_f32.max(
+                    wait_seconds as f32
+                        / (clients_count * num_workers_per_endpoint) as f32
+                        / 5.0_f32,
+                ));
+
                 info!(
-                    " Will use {} clients and {} workers per client",
-                    clients_count, num_workers_per_endpoint
+                    " Will use {} clients and {} workers per client, sampling latency on {}",
+                    clients_count, num_workers_per_endpoint, sample_latency_fraction
                 );
 
                 EmitModeParams {
@@ -293,8 +306,8 @@ impl EmitJobRequest {
                     start_jitter_millis: 0,
                     accounts_per_worker: 1,
                     workers_per_endpoint: num_workers_per_endpoint,
-                    // sample latency on 2% of requests.
-                    check_account_sequence_only_once_fraction: 1.0 - 0.02,
+                    check_account_sequence_only_once_fraction: 1.0 - sample_latency_fraction,
+                    check_account_sequence_sleep_millis: 300,
                 }
             }
         }
@@ -310,7 +323,17 @@ struct Worker {
 pub struct EmitJob {
     workers: Vec<Worker>,
     stop: Arc<AtomicBool>,
-    stats: Arc<StatsAccumulator>,
+    stats: Arc<DynamicStatsTracking>,
+}
+
+impl EmitJob {
+    pub fn start_next_phase(&self) {
+        self.stats.start_next_phase();
+    }
+
+    pub fn get_cur_phase(&self) -> usize {
+        self.stats.get_cur_phase()
+    }
 }
 
 #[derive(Debug)]
@@ -349,6 +372,7 @@ impl TxnEmitter {
         &mut self,
         root_account: &mut LocalAccount,
         req: EmitJobRequest,
+        stats_tracking_phases: usize,
     ) -> Result<EmitJob> {
         let mode_params = req.calculate_mode_params();
         let workers_per_endpoint = mode_params.workers_per_endpoint;
@@ -369,7 +393,7 @@ impl TxnEmitter {
         let all_addresses = Arc::new(RwLock::new(all_addresses));
         let mut all_accounts = all_accounts.into_iter();
         let stop = Arc::new(AtomicBool::new(false));
-        let stats = Arc::new(StatsAccumulator::default());
+        let stats = Arc::new(DynamicStatsTracking::new(stats_tracking_phases));
         let tokio_handle = Handle::current();
         let txn_factory = self
             .txn_factory
@@ -463,7 +487,7 @@ impl TxnEmitter {
         })
     }
 
-    pub async fn stop_job(&mut self, job: EmitJob) -> TxnStats {
+    pub async fn stop_job(&mut self, job: EmitJob) -> Vec<TxnStats> {
         job.stop.store(true, Ordering::Relaxed);
         for worker in job.workers {
             let mut accounts = worker
@@ -472,23 +496,30 @@ impl TxnEmitter {
                 .expect("TxnEmitter worker thread failed");
             self.accounts.append(&mut accounts);
         }
+
         job.stats.accumulate()
     }
 
-    pub fn peek_job_stats(&self, job: &EmitJob) -> TxnStats {
+    pub fn peek_job_stats(&self, job: &EmitJob) -> Vec<TxnStats> {
         job.stats.accumulate()
     }
 
     pub async fn periodic_stat(&mut self, job: &EmitJob, duration: Duration, interval_secs: u64) {
         let deadline = Instant::now() + duration;
-        let mut prev_stats: Option<TxnStats> = None;
+        let mut prev_stats: Option<Vec<TxnStats>> = None;
+        let default_stats = TxnStats::default();
         let window = Duration::from_secs(max(interval_secs, 1));
         while Instant::now() < deadline {
             tokio::time::sleep(window).await;
+            let cur_phase = job.stats.get_cur_phase();
             let stats = self.peek_job_stats(job);
-            let delta = &stats - &prev_stats.unwrap_or_default();
+            let delta = &stats[cur_phase]
+                - prev_stats
+                    .as_ref()
+                    .map(|p| &p[cur_phase])
+                    .unwrap_or(&default_stats);
             prev_stats = Some(stats);
-            info!("{}", delta.rate(window));
+            info!("phase {}: {}", cur_phase, delta.rate(window));
         }
     }
 
@@ -498,13 +529,13 @@ impl TxnEmitter {
         emit_job_request: EmitJobRequest,
         duration: Duration,
     ) -> Result<TxnStats> {
-        let job = self.start_job(root_account, emit_job_request).await?;
+        let job = self.start_job(root_account, emit_job_request, 1).await?;
         info!("Starting emitting txns for {} secs", duration.as_secs());
         time::sleep(duration).await;
         info!("Ran for {} secs, stopping job...", duration.as_secs());
         let stats = self.stop_job(job).await;
         info!("Stopped job");
-        Ok(stats)
+        Ok(stats.into_iter().next().unwrap())
     }
 
     pub async fn emit_txn_for_with_stats(
@@ -515,12 +546,12 @@ impl TxnEmitter {
         interval_secs: u64,
     ) -> Result<TxnStats> {
         info!("Starting emitting txns for {} secs", duration.as_secs());
-        let job = self.start_job(root_account, emit_job_request).await?;
+        let job = self.start_job(root_account, emit_job_request, 1).await?;
         self.periodic_stat(&job, duration, interval_secs).await;
         info!("Ran for {} secs, stopping job...", duration.as_secs());
         let stats = self.stop_job(job).await;
         info!("Stopped job");
-        Ok(stats)
+        Ok(stats.into_iter().next().unwrap())
     }
 
     pub async fn submit_single_transaction(
@@ -530,7 +561,7 @@ impl TxnEmitter {
         receiver: &AccountAddress,
         num_coins: u64,
     ) -> Result<Instant> {
-        let txn = gen_transfer_txn_request(sender, receiver, num_coins, &self.txn_factory, 1);
+        let txn = gen_transfer_txn_request(sender, receiver, num_coins, &self.txn_factory);
         client.submit(&txn).await?;
         let deadline = Instant::now() + Duration::from_secs(txn.expiration_timestamp_secs() + 30);
         Ok(deadline)
@@ -546,16 +577,19 @@ async fn wait_for_single_account_sequence(
     let deadline = Instant::now() + wait_timeout;
     while Instant::now() <= deadline {
         time::sleep(Duration::from_millis(1000)).await;
-        match query_sequence_numbers(client, [account.address()].iter()).await {
-            Ok(sequence_numbers) => {
-                if sequence_numbers[0] >= account.sequence_number() {
+        match query_sequence_number(client, account.address()).await {
+            Ok(sequence_number) => {
+                if sequence_number >= account.sequence_number() {
                     return Ok(());
                 }
             }
             Err(e) => {
-                info!(
-                    "Failed to query sequence number for account {:?} for instance {:?} : {:?}",
-                    account, client, e
+                sample!(
+                    SampleRate::Duration(Duration::from_secs(60)),
+                    warn!(
+                        "Failed to query sequence number for account {:?} for instance {:?} : {:?}",
+                        account, client, e
+                    )
                 );
             }
         }
@@ -568,7 +602,7 @@ async fn wait_for_single_account_sequence(
 }
 
 /// This function waits for the submitted transactions to be committed, up to
-/// a deadline.
+/// a wait_timeout (counted from the start_time passed in, not from the function call).
 /// It returns number of transactions that expired without being committed,
 /// and sum of completion timestamps for those that have.
 ///
@@ -579,18 +613,16 @@ async fn wait_for_accounts_sequence(
     client: &RestClient,
     accounts: &mut [LocalAccount],
     transactions_per_account: usize,
-    wait_timeout: Duration,
-    fetch_only_once: bool,
+    txn_expiration_ts_secs: u64,
+    sleep_between_cycles: Duration,
 ) -> (usize, u128) {
-    let deadline = start_time + wait_timeout;
     let mut pending_addresses: HashSet<_> = accounts.iter().map(|d| d.address()).collect();
     let mut latest_fetched_counts = HashMap::new();
 
     let mut sum_of_completion_timestamps_millis = 0u128;
-
     loop {
         match query_sequence_numbers(client, pending_addresses.iter()).await {
-            Ok(sequence_numbers) => {
+            Ok((sequence_numbers, ledger_timestamp_secs)) => {
                 let millis_elapsed = start_time.elapsed().as_millis();
                 for (account, sequence_number) in zip(accounts.iter_mut(), &sequence_numbers) {
                     let prev_sequence_number = latest_fetched_counts
@@ -600,7 +632,7 @@ async fn wait_for_accounts_sequence(
                     sum_of_completion_timestamps_millis +=
                         millis_elapsed * (*sequence_number - prev_sequence_number) as u128;
 
-                    if account.sequence_number() == *sequence_number || fetch_only_once {
+                    if account.sequence_number() == *sequence_number {
                         pending_addresses.remove(&account.address());
                     }
                 }
@@ -608,20 +640,50 @@ async fn wait_for_accounts_sequence(
                 if pending_addresses.is_empty() {
                     break;
                 }
+
+                if ledger_timestamp_secs > txn_expiration_ts_secs {
+                    sample!(
+                        SampleRate::Duration(Duration::from_secs(60)),
+                        warn!(
+                            "[{}] Ledger timestamp {} exceeded txn expiration timestamp {} for {:?}",
+                            client.path_prefix_string(),
+                            ledger_timestamp_secs,
+                            txn_expiration_ts_secs,
+                            accounts
+                                .iter()
+                                .map(|a| a.address().to_hex_literal())
+                                .collect::<Vec<_>>(),
+                        )
+                    );
+                    break;
+                }
             }
             Err(e) => {
-                info!(
-                    "Failed to query ledger info on accounts {:?} for instance {:?} : {:?}",
-                    pending_addresses, client, e
+                sample!(
+                    SampleRate::Duration(Duration::from_secs(60)),
+                    warn!(
+                        "[{}] Failed to query ledger info on accounts {:?}: {:?}",
+                        client.path_prefix_string(),
+                        pending_addresses,
+                        e
+                    )
                 );
             }
         }
 
-        if Instant::now() >= deadline {
+        if aptos_infallible::duration_since_epoch().as_secs() >= txn_expiration_ts_secs + 240 {
+            sample!(
+                SampleRate::Duration(Duration::from_secs(15)),
+                error!(
+                    "[{}] Client cannot catch up to needed timestamp ({}), after additional 240s, aborting",
+                    client.path_prefix_string(),
+                    txn_expiration_ts_secs,
+                )
+            );
             break;
         }
 
-        time::sleep(Duration::from_millis(1000)).await;
+        time::sleep(sleep_between_cycles).await;
     }
 
     (
@@ -650,6 +712,12 @@ fn update_seq_num_and_get_num_expired(
                             account.sequence_number() <= count + transactions_per_account as u64
                         );
                         let diff = (account.sequence_number() - count) as usize;
+                        debug!(
+                            "Stale sequence_number for {}, expected {}, setting to {}",
+                            account.address(),
+                            account.sequence_number(),
+                            count
+                        );
                         *account.sequence_number_mut() = *count;
                         Some(diff)
                     } else {
@@ -657,6 +725,12 @@ fn update_seq_num_and_get_num_expired(
                     }
                 }
                 None => {
+                    debug!(
+                        "Couldn't fetch sequence_number for {}, expected {}, setting to {}",
+                        account.address(),
+                        account.sequence_number(),
+                        account.sequence_number() - transactions_per_account as u64
+                    );
                     *account.sequence_number_mut() -= transactions_per_account as u64;
                     Some(transactions_per_account)
                 }
@@ -665,18 +739,36 @@ fn update_seq_num_and_get_num_expired(
         .sum()
 }
 
-pub async fn query_sequence_numbers<'a, I>(client: &RestClient, addresses: I) -> Result<Vec<u64>>
+pub async fn query_sequence_number(client: &RestClient, address: AccountAddress) -> Result<u64> {
+    Ok(query_sequence_numbers(client, [address].iter()).await?.0[0])
+}
+
+// Return a pair of (list of sequence numbers, ledger timestamp)
+pub async fn query_sequence_numbers<'a, I>(
+    client: &RestClient,
+    addresses: I,
+) -> Result<(Vec<u64>, u64)>
 where
     I: Iterator<Item = &'a AccountAddress>,
 {
-    Ok(try_join_all(
+    let (seq_nums, timestamps): (Vec<_>, Vec<_>) = try_join_all(
         addresses.map(|address| RETRY_POLICY.retry(move || client.get_account_bcs(*address))),
     )
     .await
-    .map_err(|e| format_err!("Get accounts failed: {}", e))?
+    .map_err(|e| format_err!("Get accounts failed: {:?}", e))?
     .into_iter()
-    .map(|resp| resp.into_inner().sequence_number())
-    .collect())
+    .map(|resp| {
+        let (account, state) = resp.into_parts();
+        (
+            account.sequence_number(),
+            Duration::from_micros(state.timestamp_usecs).as_secs(),
+        )
+    })
+    .unzip();
+
+    // return min for the timestamp, to make sure
+    // all sequence numbers were <= to return values at that timestamp
+    Ok((seq_nums, timestamps.into_iter().min().unwrap()))
 }
 
 pub fn gen_transfer_txn_request(
@@ -684,11 +776,8 @@ pub fn gen_transfer_txn_request(
     receiver: &AccountAddress,
     num_coins: u64,
     txn_factory: &TransactionFactory,
-    gas_price: u64,
 ) -> SignedTransaction {
     sender.sign_with_transaction_builder(
-        txn_factory
-            .payload(aptos_stdlib::aptos_coin_transfer(*receiver, num_coins))
-            .gas_unit_price(gas_price),
+        txn_factory.payload(aptos_stdlib::aptos_coin_transfer(*receiver, num_coins)),
     )
 }

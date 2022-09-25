@@ -19,7 +19,7 @@ use aptos_config::{
 use aptos_data_client::aptosnet::AptosNetDataClient;
 use aptos_fh_stream::runtime::bootstrap as bootstrap_fh_stream;
 use aptos_infallible::RwLock;
-use aptos_logger::{prelude::*, telemetry_log_writer::TelemetryLog, Level};
+use aptos_logger::{prelude::*, telemetry_log_writer::TelemetryLog, Level, LoggerFilterUpdater};
 use aptos_state_view::account_with_state_view::AsAccountWithStateView;
 use aptos_time_service::TimeService;
 use aptos_types::{
@@ -62,12 +62,14 @@ use std::{
     thread,
     time::Instant,
 };
-use storage_interface::{state_view::LatestDbStateCheckpointView, DbReaderWriter};
+use storage_interface::{state_view::LatestDbStateCheckpointView, DbReader, DbReaderWriter};
 use storage_service_client::{StorageServiceClient, StorageServiceMultiSender};
 use storage_service_server::{
     network::StorageServiceNetworkEvents, StorageReader, StorageServiceServer,
 };
 use tokio::runtime::{Builder, Runtime};
+
+use aptos_mempool::MempoolClientSender;
 
 const AC_SMP_CHANNEL_BUFFER_SIZE: usize = 1_024;
 const INTRA_NODE_CHANNEL_BUFFER_SIZE: usize = 1;
@@ -168,6 +170,7 @@ pub struct AptosHandle {
     _mempool: Runtime,
     _network_runtimes: Vec<Runtime>,
     _fh_stream: Option<Runtime>,
+    _index_runtime: Option<Runtime>,
     _state_sync_runtimes: StateSyncRuntimes,
     _telemetry_runtime: Option<Runtime>,
 }
@@ -187,8 +190,8 @@ pub fn start(
             .expect("Failed to build rayon global thread _pool.");
     }
 
-    let mut logger = aptos_logger::Logger::new();
-    logger
+    let mut logger_builder = aptos_logger::Logger::builder();
+    logger_builder
         .channel_size(config.logger.chan_size)
         .is_async(config.logger.is_async)
         .level(config.logger.level)
@@ -197,18 +200,19 @@ pub fn start(
         .console_port(config.logger.console_port)
         .read_env();
     if config.logger.enable_backtrace {
-        logger.enable_backtrace();
+        logger_builder.enable_backtrace();
     }
     if let Some(log_file) = log_file {
-        logger.printer(Box::new(FileWriter::new(log_file)));
+        logger_builder.printer(Box::new(FileWriter::new(log_file)));
     }
     let mut remote_log_rx = None;
     if config.logger.enable_telemetry_remote_log {
         let (tx, rx) = mpsc::channel(TELEMETRY_LOG_INGEST_BUFFER_SIZE);
-        logger.remote_log_tx(tx);
+        logger_builder.remote_log_tx(tx);
         remote_log_rx = Some(rx);
     }
-    let _logger = logger.build();
+    let logger = logger_builder.build();
+    let logger_filter_update_job = aptos_logger::LoggerFilterUpdater::new(logger, logger_builder);
 
     // Print out build information.
     log_build_information();
@@ -227,7 +231,7 @@ pub fn start(
         warn!("failpoints is set in config, but the binary doesn't compile with this feature");
     }
 
-    let _node_handle = setup_environment(config, remote_log_rx)?;
+    let _node_handle = setup_environment(config, remote_log_rx, Some(logger_filter_update_job))?;
 
     let term = Arc::new(AtomicBool::new(false));
 
@@ -274,6 +278,34 @@ where
     } else {
         // Build a single validator network with a generated config
         let mut template = NodeConfig::default_for_validator();
+
+        // Adjust some fields in the default template to lower the overhead of running on a
+        // local machine
+        template.state_sync.storage_service.max_concurrent_requests = 2;
+        template
+            .state_sync
+            .aptos_data_client
+            .max_num_in_flight_priority_polls = 2;
+        template
+            .state_sync
+            .aptos_data_client
+            .max_num_in_flight_regular_polls = 2;
+        template
+            .state_sync
+            .aptos_data_client
+            .summary_poll_interval_ms = 1000;
+        template
+            .state_sync
+            .storage_service
+            .storage_summary_refresh_interval_ms = 1000;
+        template
+            .state_sync
+            .state_sync_driver
+            .max_consecutive_stream_notifications = 2;
+        template.execution.concurrency_level = 2;
+        template.peer_monitoring_service.max_concurrent_requests = 2;
+        let validator_network = template.validator_network.as_mut().unwrap();
+        validator_network.max_concurrent_network_reqs = 2;
 
         // If a config path was provided, use that as the template
         if let Some(config_path) = config_path {
@@ -521,9 +553,35 @@ fn setup_state_sync_storage_service(
     Ok(storage_service_runtime)
 }
 
+#[cfg(feature = "indexer")]
+fn bootstrap_indexer(
+    node_config: &NodeConfig,
+    chain_id: ChainId,
+    aptos_db: Arc<dyn DbReader>,
+    mp_client_sender: MempoolClientSender,
+) -> Result<Option<Runtime>, anyhow::Error> {
+    use aptos_indexer::runtime::bootstrap as bootstrap_indexer_stream;
+
+    match bootstrap_indexer_stream(&node_config, chain_id, aptos_db, mp_client_sender) {
+        None => Ok(None),
+        Some(res) => res.map(Some),
+    }
+}
+
+#[cfg(not(feature = "indexer"))]
+fn bootstrap_indexer(
+    _node_config: &NodeConfig,
+    _chain_id: ChainId,
+    _aptos_db: Arc<dyn DbReader>,
+    _mp_client_sender: MempoolClientSender,
+) -> Result<Option<Runtime>, anyhow::Error> {
+    Ok(None)
+}
+
 pub fn setup_environment(
     node_config: NodeConfig,
     remote_log_rx: Option<mpsc::Receiver<TelemetryLog>>,
+    logger_filter_update_job: Option<LoggerFilterUpdater>,
 ) -> anyhow::Result<AptosHandle> {
     // Start the node inspection service
     let node_config_clone = node_config.clone();
@@ -568,7 +626,6 @@ pub fn setup_environment(
         instant.elapsed().as_millis()
     );
 
-    let chain_id = fetch_chain_id(&db_rw)?;
     let mut network_runtimes = vec![];
     let mut mempool_network_handles = vec![];
     let mut consensus_network_handles = None;
@@ -593,6 +650,10 @@ pub fn setup_environment(
     // Gather all network configs into a single vector.
     let mut network_configs: Vec<&NetworkConfig> = node_config.full_node_networks.iter().collect();
     if let Some(network_config) = node_config.validator_network.as_ref() {
+        // Ensure that mutual authentication is enabled by default!
+        if !network_config.mutual_authentication {
+            panic!("Validator networks must always have mutual_authentication enabled!");
+        }
         network_configs.push(network_config);
     }
 
@@ -610,8 +671,9 @@ pub fn setup_environment(
         network_ids.insert(network_id);
     });
     let network_ids: Vec<_> = network_ids.into_iter().collect();
-
     let peer_metadata_storage = PeerMetadataStorage::new(&network_ids);
+
+    let chain_id = fetch_chain_id(&db_rw)?;
     for network_config in network_configs.into_iter() {
         let network_id = network_config.network_id;
         debug!("Creating runtime for {}", network_id);
@@ -730,10 +792,17 @@ pub fn setup_environment(
         aptos_db.clone(),
         mp_client_sender.clone(),
     )?;
-    let sf_runtime = match bootstrap_fh_stream(&node_config, chain_id, aptos_db, mp_client_sender) {
+    let sf_runtime = match bootstrap_fh_stream(
+        &node_config,
+        chain_id,
+        aptos_db.clone(),
+        mp_client_sender.clone(),
+    ) {
         None => None,
         Some(res) => Some(res?),
     };
+
+    let index_runtime = bootstrap_indexer(&node_config, chain_id, aptos_db, mp_client_sender)?;
 
     let mut consensus_runtime = None;
     let (consensus_to_mempool_sender, consensus_to_mempool_receiver) =
@@ -797,6 +866,7 @@ pub fn setup_environment(
         chain_id,
         build_info,
         remote_log_rx,
+        logger_filter_update_job,
     );
 
     Ok(AptosHandle {
@@ -805,8 +875,34 @@ pub fn setup_environment(
         _consensus_runtime: consensus_runtime,
         _mempool: mempool,
         _network_runtimes: network_runtimes,
+        _index_runtime: index_runtime,
         _fh_stream: sf_runtime,
         _state_sync_runtimes: state_sync_runtimes,
         _telemetry_runtime: telemetry_runtime,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::setup_environment;
+    use aptos_config::config::{NodeConfig, WaypointConfig};
+    use aptos_temppath::TempPath;
+    use aptos_types::waypoint::Waypoint;
+
+    #[test]
+    #[should_panic(expected = "Validator networks must always have mutual_authentication enabled!")]
+    fn test_mutual_authentication_validators() {
+        // Create a default node config for the validator
+        let temp_path = TempPath::new();
+        let mut node_config = NodeConfig::default_for_validator();
+        node_config.set_data_dir(temp_path.path().to_path_buf());
+        node_config.base.waypoint = WaypointConfig::FromConfig(Waypoint::default());
+
+        // Disable mutual authentication for the config
+        let validator_network = node_config.validator_network.as_mut().unwrap();
+        validator_network.mutual_authentication = false;
+
+        // Starting the node should panic
+        setup_environment(node_config, None, None).unwrap();
+    }
 }

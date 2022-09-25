@@ -152,7 +152,7 @@ variable "helm_enable_validator" {
 
 variable "utility_instance_type" {
   description = "Instance type used for utilities"
-  default     = "t3.medium"
+  default     = "t3.2xlarge"
 }
 
 variable "utility_instance_num" {
@@ -221,16 +221,6 @@ variable "logger_helm_values" {
   default     = {}
 }
 
-variable "enable_vector_daemonset_logger" {
-  description = "Enable vector daemonset logger helm chart"
-  default     = false
-}
-
-variable "vector_daemonset_helm_values" {
-  description = "Map of helm values to pass to vector-daemonset chart"
-  type        = list(string)
-  default     = []
-}
 
 variable "enable_monitoring" {
   description = "Enable monitoring helm chart"

@@ -107,17 +107,6 @@ variable "logger_helm_values" {
   default     = {}
 }
 
-variable "enable_vector_daemonset_logger" {
-  description = "Enable vector-daemonset logger"
-  default     = false
-}
-
-variable "vector_daemonset_helm_values" {
-  description = "Map of helm values to pass to vector-daemonset chart"
-  type        = list(string)
-  default     = []
-}
-
 variable "monitoring_helm_values" {
   description = "Map of values to pass to monitoring helm chart"
   type        = any
@@ -175,12 +164,12 @@ variable "validator_instance_max_num" {
 
 variable "utility_instance_type" {
   description = "Instance type used for utilities"
-  default     = "t3.medium"
+  default     = "t3.2xlarge"
 }
 
 variable "validator_instance_type" {
   description = "Instance type used for validator and fullnodes"
-  default     = "c5.xlarge"
+  default     = "c6i.4xlarge"
 }
 
 ### Forge

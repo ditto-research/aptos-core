@@ -31,7 +31,6 @@ use aptos_types::{
         AccountTransactionsWithProof, TransactionInfo, TransactionListWithProof,
         TransactionOutputListWithProof, TransactionToCommit, TransactionWithProof, Version,
     },
-    write_set::WriteSet,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
@@ -191,17 +190,6 @@ pub trait DbReader: Send + Sync {
         unimplemented!()
     }
 
-    /// See [`AptosDB::get_write_sets`].
-    ///
-    /// [`AptosDB::get_write_sets`]: ../aptosdb/struct.AptosDB.html#method.get_write_sets
-    fn get_write_sets(
-        &self,
-        start_version: Version,
-        end_version: Version,
-    ) -> Result<Vec<WriteSet>> {
-        unimplemented!()
-    }
-
     /// Returns events by given event key
     fn get_events(
         &self,
@@ -249,14 +237,6 @@ pub trait DbReader: Send + Sync {
         _timestamp: u64,
         _ledger_version: Version,
     ) -> Result<Version> {
-        unimplemented!()
-    }
-
-    /// See [AptosDB::get_latest_account_state].
-    ///
-    /// [AptosDB::get_latest_account_state]:
-    /// ../aptosdb/struct.AptosDB.html#method.get_latest_account_state
-    fn get_latest_state_value(&self, state_key: StateKey) -> Result<Option<StateValue>> {
         unimplemented!()
     }
 

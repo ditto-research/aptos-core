@@ -335,6 +335,14 @@ where
                         ));
                     }
                 }
+            } else {
+                statuses.push((
+                    transaction.clone(),
+                    (
+                        MempoolStatus::new(MempoolStatusCode::VmError),
+                        Some(DiscardedVMStatus::UNKNOWN_STATUS),
+                    ),
+                ));
             }
         }
     }
@@ -404,7 +412,8 @@ pub(crate) fn process_quorum_store_request<V: TransactionValidation>(
                 let max_txns = cmp::max(max_txns, 1);
                 txns = mempool.get_batch(max_txns, max_bytes, exclude_transactions);
             }
-            counters::mempool_service_transactions(counters::GET_BLOCK_LABEL, txns.len());
+
+            // mempool_service_transactions is logged inside get_batch
 
             (
                 QuorumStoreResponse::GetBatchResponse(txns),

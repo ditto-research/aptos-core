@@ -13,12 +13,13 @@ class ButtonComponent < ViewComponent::Base
                'uppercase font-normal uppercase font-mono active:brightness-95 font-normal ' \
                'hover:subpixel-antialiased ring-inset',
     tertiary: 'whitespace-nowrap text-teal-300 hover:brightness-105 active:brightness-95 uppercase ' \
-              'font-normal font-mono'
+              'font-normal font-mono',
+    blank: '!p-0 hover:brightness-110'
   }.freeze
 
   SIZE_CLASSES = {
     xl: 'px-24 py-6 text-2xl rounded-lg gap-8',
-    large: 'px-16 py-4 text-xl rounded-lg gap-4',
+    large: 'px-12 py-4 text-xl rounded-lg gap-4',
     medium: 'px-8 py-2 text-lg rounded-lg gap-2',
     small: 'px-4 py-1.5 text-sm rounded-lg gap-1',
     tiny: 'px-3 py-1 text-xs rounded gap-1'

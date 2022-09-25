@@ -113,25 +113,28 @@ pub async fn bootstrap_async(
             client
                 .get_ledger_information()
                 .await
-                .expect("Should successfully get ledger information from Rest API")
+                .expect("Should successfully get ledger information from Rest API on bootstap")
                 .into_inner()
                 .chain_id,
             "Failed to match Rosetta chain Id to upstream server"
         );
     }
 
-    let api = WebServer::from(api_config);
+    let api = WebServer::from(api_config.clone());
     let handle = tokio::spawn(async move {
         // If it's Online mode, add the block cache
         let rest_client = rest_client.map(Arc::new);
-        let block_cache = rest_client
-            .as_ref()
-            .map(|rest_client| Arc::new(BlockRetriever::new(rest_client.clone())));
+        let block_cache = rest_client.as_ref().map(|rest_client| {
+            Arc::new(BlockRetriever::new(
+                api_config.max_transactions_page_size,
+                rest_client.clone(),
+            ))
+        });
 
         let context = RosettaContext {
             rest_client: rest_client.clone(),
             chain_id,
-            coin_cache: Arc::new(CoinCache::new()),
+            coin_cache: Arc::new(CoinCache::new(rest_client.clone())),
             block_cache,
             accounts: Arc::new(Mutex::new(BTreeMap::new())),
         };

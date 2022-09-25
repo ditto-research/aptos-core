@@ -456,6 +456,42 @@ module aptos_framework::genesis {
         )
     }
 
+    #[test_only]
+    public fun init_for_test(
+        epoch_interval_microsecs: u64,
+        minimum_stake: u64,
+        maximum_stake: u64,
+        recurring_lockup_duration_secs: u64,
+        rewards_rate: u64,
+    ) {
+        initialize(
+            x"000000000000000000", // empty gas schedule
+            4u8, // TESTING chain ID
+            0,
+            x"12",
+            epoch_interval_microsecs,
+            minimum_stake,
+            maximum_stake,
+            recurring_lockup_duration_secs,
+            true,
+            rewards_rate,
+            100,
+            maximum_stake,
+        )
+    }
+
+    #[test_only]
+    public fun init_aptos_coin_for_test(
+        aptos_framework: &signer
+    ) {
+        initialize_aptos_coin(aptos_framework);
+    }
+
+    #[test_only]
+    public fun set_genesis_end_for_test(aptos_framework: &signer) {
+        chain_status::set_genesis_end(aptos_framework);
+    }
+
     #[test]
     fun test_setup() {
         setup();

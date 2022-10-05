@@ -511,7 +511,7 @@ module aptos_framework::staking_contract {
         let (_, inactive, _, pending_inactive) = stake::get_stake(pool_address);
         let total_potential_withdrawable = inactive + pending_inactive;
         let coins = stake::withdraw_with_cap(&staking_contract.owner_cap, total_potential_withdrawable);
-        let distribution_amount =  coin::value(&coins);
+        let distribution_amount = coin::value(&coins);
         if (distribution_amount == 0) {
             coin::destroy_zero(coins);
             return
@@ -538,6 +538,7 @@ module aptos_framework::staking_contract {
         // In case there's any dust left, send them all to the staker.
         if (coin::value(&coins) > 0) {
             coin::deposit(staker, coins);
+            pool_u64::update_total_coins(distribution_pool, 0);
         } else {
             coin::destroy_zero(coins);
         }
@@ -593,7 +594,7 @@ module aptos_framework::staking_contract {
         operator: address,
         voter: address,
         contract_creation_seed: vector<u8>,
-    ): (signer, SignerCapability, OwnerCapability)  {
+    ): (signer, SignerCapability, OwnerCapability) {
         // Generate a seed that will be used to create the resource account that hosts the staking contract.
         let seed = bcs::to_bytes(&signer::address_of(staker));
         vector::append(&mut seed, bcs::to_bytes(&operator));
@@ -655,7 +656,6 @@ module aptos_framework::staking_contract {
     fun new_staking_contracts_holder(staker: &signer): Store {
         Store {
             staking_contracts: simple_map::create<address, StakingContract>(),
-
             // Events.
             create_staking_contract_events: account::new_event_handle<CreateStakingContractEvent>(staker),
             update_voter_events: account::new_event_handle<UpdateVoterEvent>(staker),
@@ -813,12 +813,12 @@ module aptos_framework::staking_contract {
         let staker_balance = coin::balance<AptosCoin>(staker_address);
         // Staker receives the extra dust due to rounding error.
         assert!(staker_balance == withdrawn_amount + 1, staker_balance);
+        assert_no_pending_distributions(staker_address, operator_address);
     }
 
     #[test(aptos_framework = @0x1, staker = @0x123, operator = @0x234)]
     public entry fun test_operator_cannot_request_same_commission_multiple_times(
         aptos_framework: &signer, staker: &signer, operator: &signer) acquires Store {
-
         setup_staking_contract(aptos_framework, staker, operator, INITIAL_BALANCE, 10);
         let staker_address = signer::address_of(staker);
         let operator_address = signer::address_of(operator);
@@ -846,7 +846,6 @@ module aptos_framework::staking_contract {
     #[test(aptos_framework = @0x1, staker = @0x123, operator = @0x234)]
     public entry fun test_unlock_rewards(
         aptos_framework: &signer, staker: &signer, operator: &signer) acquires Store {
-
         setup_staking_contract(aptos_framework, staker, operator, INITIAL_BALANCE, 10);
         let staker_address = signer::address_of(staker);
         let operator_address = signer::address_of(operator);
@@ -1171,8 +1170,11 @@ module aptos_framework::staking_contract {
     #[test_only]
     public fun assert_no_pending_distributions(staker: address, operator: address) acquires Store {
         let staking_contract = simple_map::borrow(&borrow_global<Store>(staker).staking_contracts, &operator);
-        let shareholders_count = pool_u64::shareholders_count(&staking_contract.distribution_pool);
+        let distribution_pool = &staking_contract.distribution_pool;
+        let shareholders_count = pool_u64::shareholders_count(distribution_pool);
         assert!(shareholders_count == 0, shareholders_count);
+        let total_coins_remaining = pool_u64::total_coins(distribution_pool);
+        assert!(total_coins_remaining == 0, total_coins_remaining);
     }
 
     #[test_only]

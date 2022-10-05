@@ -72,6 +72,8 @@ module aptos_framework::stake {
     const EOWNER_CAP_ALREADY_EXISTS: u64 = 16;
     /// Validator is not defined in the ACL of entities allowed to be validators
     const EINELIGIBLE_VALIDATOR: u64 = 17;
+    /// Cannot update stake pool's lockup to earlier than current lockup.
+    const EINVALID_LOCKUP: u64 = 18;
 
     /// Validator status enum. We can switch to proper enum later once Move supports it.
     const VALIDATOR_STATUS_PENDING_ACTIVE: u64 = 1;
@@ -387,15 +389,8 @@ module aptos_framework::stake {
         system_addresses::assert_aptos_framework(aptos_framework);
 
         let validator_set = borrow_global_mut<ValidatorSet>(@aptos_framework);
-        remove_validators_internal(&mut validator_set.active_validators, validators);
-    }
-
-    /// Helper function to remove the `validators` from the `active_validators`.
-    /// This function helps proving the global invariant.
-    fun remove_validators_internal(
-        active_validators: &mut vector<ValidatorInfo>,
-        validators: &vector<address>,
-    ) {
+        let active_validators = &mut validator_set.active_validators;
+        let pending_inactive = &mut validator_set.pending_inactive;
         let len = vector::length(validators);
         let i = 0;
         // Remove each validator from the validator set.
@@ -403,13 +398,16 @@ module aptos_framework::stake {
             spec {
                 invariant spec_validators_are_initialized(active_validators);
                 invariant spec_validator_indices_are_valid(active_validators);
+                invariant spec_validators_are_initialized(pending_inactive);
+                invariant spec_validator_indices_are_valid(pending_inactive);
             };
             i < len
         }) {
             let validator = *vector::borrow(validators, i);
             let validator_index = find_validator(active_validators, validator);
             if (option::is_some(&validator_index)) {
-                vector::remove(active_validators, *option::borrow(&validator_index));
+                let validator_info = vector::swap_remove(active_validators, *option::borrow(&validator_index));
+                vector::push_back(pending_inactive, validator_info);
             };
             i = i + 1;
         };
@@ -483,7 +481,6 @@ module aptos_framework::stake {
             locked_until_secs: 0,
             operator_address: owner_address,
             delegated_voter: owner_address,
-
             // Events.
             initialize_validator_events: account::new_event_handle<RegisterValidatorCandidateEvent>(owner),
             set_operator_events: account::new_event_handle<SetOperatorEvent>(owner),
@@ -725,14 +722,16 @@ module aptos_framework::stake {
 
         let stake_pool = borrow_global_mut<StakePool>(pool_address);
         let old_locked_until_secs = stake_pool.locked_until_secs;
-        stake_pool.locked_until_secs = timestamp::now_seconds() + staking_config::get_recurring_lockup_duration(&config);
+        let new_locked_until_secs = timestamp::now_seconds() + staking_config::get_recurring_lockup_duration(&config);
+        assert!(old_locked_until_secs < new_locked_until_secs, error::invalid_argument(EINVALID_LOCKUP));
+        stake_pool.locked_until_secs = new_locked_until_secs;
 
         event::emit_event(
             &mut stake_pool.increase_lockup_events,
             IncreaseLockupEvent {
                 pool_address,
                 old_locked_until_secs,
-                new_locked_until_secs: stake_pool.locked_until_secs,
+                new_locked_until_secs,
             },
         );
     }
@@ -783,9 +782,9 @@ module aptos_framework::stake {
 
         // Validate the current validator set size has not exceeded the limit.
         let validator_set = borrow_global_mut<ValidatorSet>(@aptos_framework);
+        vector::push_back(&mut validator_set.pending_active, generate_validator_info(pool_address, stake_pool, *validator_config));
         let validator_set_size = vector::length(&validator_set.active_validators) + vector::length(&validator_set.pending_active);
         assert!(validator_set_size <= MAX_VALIDATOR_SET_SIZE, error::invalid_argument(EVALIDATOR_SET_TOO_LARGE));
-        vector::push_back(&mut validator_set.pending_active, generate_validator_info(pool_address, stake_pool, *validator_config));
 
         event::emit_event(
             &mut stake_pool.join_validator_set_events,
@@ -911,7 +910,6 @@ module aptos_framework::stake {
             } else {
                 validator_set.total_joining_power = 0;
             };
-
         } else {
             // Validate that the validator is already part of the validator set.
             let maybe_active_index = find_validator(&validator_set.active_validators, pool_address);
@@ -1121,7 +1119,7 @@ module aptos_framework::stake {
 
         let (rewards_rate, rewards_rate_denominator) = staking_config::get_reward_rate(staking_config);
         let rewards_active = distribute_rewards(
-             &mut stake_pool.active,
+            &mut stake_pool.active,
             num_successful_proposals,
             num_total_proposals,
             rewards_rate,
@@ -1650,6 +1648,23 @@ module aptos_framework::stake {
         assert_validator_state(validator_address, 100, 0, 0, 0, 0);
     }
 
+    #[test(aptos_framework = @aptos_framework, validator = @0x123)]
+    #[expected_failure(abort_code = 0x10012)]
+    public entry fun test_cannot_reduce_lockup(
+        aptos_framework: &signer,
+        validator: &signer,
+    ) acquires AllowedValidators, OwnerCapability, StakePool, AptosCoinCapabilities, ValidatorConfig, ValidatorPerformance, ValidatorSet {
+        initialize_for_test(aptos_framework);
+        initialize_test_validator(validator, 100, false, false);
+
+        // Increase lockup.
+        increase_lockup(validator);
+        // Reduce recurring lockup to 0.
+        staking_config::update_recurring_lockup_duration_secs(aptos_framework, 1);
+        // INcrease lockup should now fail because the new lockup < old lockup.
+        increase_lockup(validator);
+    }
+
     #[test(aptos_framework = @aptos_framework, validator_1 = @0x123, validator_2 = @0x234)]
     #[expected_failure(abort_code = 0x1000D)]
     public entry fun test_inactive_validator_cannot_join_if_exceed_increase_limit(
@@ -2086,7 +2101,7 @@ module aptos_framework::stake {
         validator: &signer,
     ) acquires AllowedValidators, OwnerCapability, StakePool, AptosCoinCapabilities, ValidatorConfig, ValidatorPerformance, ValidatorSet {
         initialize_for_test_custom(aptos_framework, 100, 10000, LOCKUP_CYCLE_SECONDS, true, 1, 100, 100);
-        initialize_test_validator(validator, 0, false ,false);
+        initialize_test_validator(validator, 0, false, false);
         let owner_cap = extract_owner_cap(validator);
 
         // Add stake when the validator is not yet activated.
@@ -2416,8 +2431,10 @@ module aptos_framework::stake {
         assert!(vector::length(&borrow_global<ValidatorSet>(@aptos_framework).active_validators) == 2, 0);
 
         // Remove validator 1 from the active validator set. Only validator 2 remains.
-        remove_validators(aptos_framework, &vector[signer::address_of(validator_1)]);
+        let validator_to_remove = signer::address_of(validator_1);
+        remove_validators(aptos_framework, &vector[validator_to_remove]);
         assert!(vector::length(&borrow_global<ValidatorSet>(@aptos_framework).active_validators) == 1, 0);
+        assert!(get_validator_state(validator_to_remove) == VALIDATOR_STATUS_PENDING_INACTIVE, 1);
     }
 
     #[test_only]

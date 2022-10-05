@@ -44,12 +44,14 @@ use aptos_sdk::{
     move_types::language_storage::{StructTag, TypeTag},
     transaction_builder::TransactionFactory,
 };
+use aptos_types::chain_id::ChainId;
 use aptos_types::{
     account_address::AccountAddress,
     transaction::{
         authenticator::AuthenticationKey, RawTransaction, SignedTransaction, TransactionPayload,
     },
 };
+use serde::de::DeserializeOwned;
 use std::convert::TryFrom;
 use std::time::{SystemTime, UNIX_EPOCH};
 use warp::Filter;
@@ -195,7 +197,7 @@ async fn construction_derive(
     let address = AuthenticationKey::ed25519(&public_key).derived_address();
 
     Ok(ConstructionDeriveResponse {
-        account_identifier: address.into(),
+        account_identifier: AccountIdentifier::base_account(address),
     })
 }
 
@@ -217,6 +219,182 @@ async fn construction_hash(
     Ok(TransactionIdentifierResponse {
         transaction_identifier: signed_transaction.committed_hash().into(),
     })
+}
+
+/// Fills in the operator for actions that require it but don't have one
+async fn fill_in_operator(
+    rest_client: &aptos_rest_client::Client,
+    mut internal_operation: InternalOperation,
+) -> ApiResult<InternalOperation> {
+    match &mut internal_operation {
+        InternalOperation::SetOperator(op) => {
+            // If there was no old operator set, and there is only one, we should use that
+            if op.old_operator.is_none() {
+                let store = rest_client
+                    .get_account_resource_bcs::<Store>(op.owner, "0x1::staking_contract::Store")
+                    .await?
+                    .into_inner();
+                if store.staking_contracts.len() != 1 {
+                    let operators: Vec<_> = store
+                        .staking_contracts
+                        .iter()
+                        .map(|(operator, _)| operator)
+                        .collect();
+                    return Err(ApiError::InvalidInput(Some(format!(
+                        "Account has more than one operator, operator must be specified from: {:?}",
+                        operators
+                    ))));
+                } else {
+                    op.old_operator = Some(
+                        *store
+                            .staking_contracts
+                            .iter()
+                            .next()
+                            .map(|inner| inner.0)
+                            .unwrap(),
+                    );
+                }
+            }
+        }
+        InternalOperation::SetVoter(op) => {
+            // If there was no operator set, and there is only one, we should use that
+            if op.operator.is_none() {
+                let store = rest_client
+                    .get_account_resource_bcs::<Store>(op.owner, "0x1::staking_contract::Store")
+                    .await?
+                    .into_inner();
+                if store.staking_contracts.len() != 1 {
+                    let operators: Vec<_> = store
+                        .staking_contracts
+                        .iter()
+                        .map(|(operator, _)| operator)
+                        .collect();
+                    return Err(ApiError::InvalidInput(Some(format!(
+                        "Account has more than one operator, operator must be specified from: {:?}",
+                        operators
+                    ))));
+                } else {
+                    op.operator = Some(
+                        *store
+                            .staking_contracts
+                            .iter()
+                            .next()
+                            .map(|inner| inner.0)
+                            .unwrap(),
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+
+    Ok(internal_operation)
+}
+
+async fn simulate_transaction(
+    rest_client: &aptos_rest_client::Client,
+    chain_id: ChainId,
+    options: &MetadataOptions,
+    internal_operation: &InternalOperation,
+    sequence_number: u64,
+) -> ApiResult<(Amount, u64, u64)> {
+    // If we have any missing fields, let's simulate!
+    let mut transaction_factory = TransactionFactory::new(chain_id);
+
+    // If we have a gas unit price, let's not estimate
+    let mut estimate_gas_price = true;
+    if let Some(gas_unit_price) = options.gas_price_per_unit.as_ref() {
+        estimate_gas_price = false;
+        transaction_factory = transaction_factory.with_gas_unit_price(gas_unit_price.0);
+    }
+
+    // Build up the transaction
+    let (txn_payload, sender) = internal_operation.payload()?;
+    let unsigned_transaction = transaction_factory
+        .payload(txn_payload)
+        .sender(sender)
+        .sequence_number(sequence_number)
+        .build();
+
+    // Read and fill in public key as necessary, this is required for simulation!
+    // TODO: Only single signer supported
+    let public_key =
+        if let Some(public_key) = options.public_keys.as_ref().and_then(|inner| inner.first()) {
+            Ed25519PublicKey::from_encoded_string(&public_key.hex_bytes).map_err(|err| {
+                ApiError::InvalidInput(Some(format!(
+                    "Public key provided is not parsable {:?}",
+                    err
+                )))
+            })?
+        } else {
+            return Err(ApiError::InvalidInput(Some(
+                "Must provide public_keys for simulation otherwise it can't simulate!".to_string(),
+            )));
+        };
+
+    // Sign the transaction with a dummy signature of all zeros as required by the API
+    let signed_transaction = SignedTransaction::new(
+        unsigned_transaction,
+        public_key,
+        Ed25519Signature::try_from([0u8; 64].as_ref()).expect("Zero signature should always work"),
+    );
+
+    // Simulate, filling in the fields that aren't being currently handled
+    // This API will always succeed unless 2 conditions
+    // 1. The API was going to fail anyways due to a bad transaction e.g. wrong signer, insufficient balance, etc.
+    // 2. The used gas price (provided or estimated) * the maximum possible gas is can't be paid e.g. there is no
+    //    way for this user to ever pay for this transaction (at that gas price)
+    let response = rest_client
+        .simulate_bcs_with_gas_estimation(&signed_transaction, true, estimate_gas_price)
+        .await?;
+
+    let simulated_txn = response.inner();
+
+    // Check that we didn't go over the max gas provided by the API
+    if let Some(max_gas_amount) = options.max_gas_amount.as_ref() {
+        if max_gas_amount.0 < simulated_txn.info.gas_used() {
+            return Err(ApiError::MaxGasFeeTooLow(Some(format!(
+                "Max gas amount {} is less than number of actual gas units used {}",
+                max_gas_amount.0,
+                simulated_txn.info.gas_used()
+            ))));
+        }
+    }
+
+    // Handle any other messages, including out of gas, which means the user has not enough
+    // funds to complete the transaction (e.g. the gas price is too high)
+    let simulation_status = simulated_txn.info.status();
+    if !simulation_status.is_success() {
+        // TODO: Fix case for not enough gas to be a better message
+        return Err(ApiError::InvalidInput(Some(format!(
+            "Transaction failed to simulate with status: {:?}",
+            simulation_status
+        ))));
+    }
+
+    if let Ok(user_txn) = simulated_txn.transaction.as_signed_user_txn() {
+        // This gas price came from the simulation (would be the one from the input if provided)
+        let simulated_gas_unit_price = user_txn.gas_unit_price();
+
+        // These two will either be estimated or the original value, so we can just use them exactly
+        let max_gas_amount = if let Some(max_gas_amount) = options.max_gas_amount.as_ref() {
+            max_gas_amount.0
+        } else {
+            // If estimating, we want to give headroom to ensure the transaction succeeds
+            adjust_gas_headroom(simulated_txn.info.gas_used(), user_txn.max_gas_amount())
+        };
+
+        // Multiply the gas price times the max gas amount to use
+        let suggested_fee = Amount::suggested_gas_fee(simulated_gas_unit_price, max_gas_amount);
+
+        Ok((suggested_fee, simulated_gas_unit_price, max_gas_amount))
+    } else {
+        // This should never happen, because the underlying API can't run a non-user transaction
+        Err(ApiError::InternalError(Some(format!(
+            "Transaction returned by API was not a user transaction: {:?}",
+            simulated_txn.transaction
+        ))))
+    }
 }
 
 /// Construction metadata command
@@ -247,100 +425,22 @@ async fn construction_metadata(
         response.inner().sequence_number
     };
 
+    // We have to cheat the set operator and set voter operations right here
+    let internal_operation = fill_in_operator(
+        rest_client.as_ref(),
+        request.options.internal_operation.clone(),
+    )
+    .await?;
+
     // If both are present, we skip simulation
-    let (suggested_fee, gas_unit_price, max_gas_amount) =
-        if let (Some(gas_unit_price), Some(max_gas_amount)) = (
-            request.options.gas_price_per_unit,
-            request.options.max_gas_amount,
-        ) {
-            let suggested_fee = Amount::suggested_gas_fee(gas_unit_price.0, max_gas_amount.0);
-            (suggested_fee, gas_unit_price.0, max_gas_amount.0)
-        } else {
-            // If we have any missing fields, let's simulate!
-            let mut transaction_factory = TransactionFactory::new(server_context.chain_id);
-
-            // If there's a gas unit price we're using it, max gas doesn't matter the API will overwrite it
-            if let Some(gas_unit_price) = request.options.gas_price_per_unit {
-                transaction_factory = transaction_factory.with_gas_unit_price(gas_unit_price.0)
-            }
-
-            // Build up the transaction
-            let (txn_payload, sender) = request.options.internal_operation.payload()?;
-            let unsigned_transaction = transaction_factory
-                .payload(txn_payload)
-                .sender(sender)
-                .sequence_number(sequence_number)
-                .build();
-
-            let public_key = if let Some(public_key) = request
-                .options
-                .public_keys
-                .as_ref()
-                .and_then(|inner| inner.first())
-            {
-                Ed25519PublicKey::from_encoded_string(&public_key.hex_bytes).map_err(|err| {
-                    ApiError::InvalidInput(Some(format!(
-                        "Public key provided is not parsable {:?}",
-                        err
-                    )))
-                })?
-            } else {
-                return Err(ApiError::InvalidInput(Some(
-                    "Must provide public_keys with max_gas_amount".to_string(),
-                )));
-            };
-            let signed_transaction = SignedTransaction::new(
-                unsigned_transaction,
-                public_key,
-                Ed25519Signature::try_from([0u8; 64].as_ref())
-                    .expect("Zero signature should always work"),
-            );
-
-            let response = rest_client
-                .simulate_bcs_with_gas_estimation(
-                    &signed_transaction,
-                    true,
-                    request.options.gas_price_per_unit.is_none(),
-                )
-                .await?;
-
-            let simulated_txn = response.inner();
-
-            let simulation_status = simulated_txn.info.status();
-
-            if !simulation_status.is_success() {
-                // TODO: Fix case for not enough gas to be a better message
-                return Err(ApiError::InvalidInput(Some(format!(
-                    "Transaction failed to execute with status: {:?}",
-                    simulation_status
-                ))));
-            }
-
-            if let Ok(user_txn) = simulated_txn.transaction.as_signed_user_txn() {
-                let estimated_gas_unit_price = user_txn.gas_unit_price();
-                let adjusted_gas_used =
-                    adjust_gas_headroom(simulated_txn.info.gas_used(), user_txn.max_gas_amount());
-
-                let suggested_fee =
-                    Amount::suggested_gas_fee(estimated_gas_unit_price, adjusted_gas_used);
-                let gas_unit_price = request
-                    .options
-                    .gas_price_per_unit
-                    .map(|inner| inner.0)
-                    .unwrap_or(estimated_gas_unit_price);
-                let max_gas_amount = request
-                    .options
-                    .max_gas_amount
-                    .map(|inner| inner.0)
-                    .unwrap_or(adjusted_gas_used);
-                (suggested_fee, gas_unit_price, max_gas_amount)
-            } else {
-                return Err(ApiError::InternalError(Some(format!(
-                    "Transaction returned by API was not a user transaction: {:?}",
-                    simulated_txn.transaction
-                ))));
-            }
-        };
+    let (suggested_fee, gas_unit_price, max_gas_amount) = simulate_transaction(
+        rest_client.as_ref(),
+        server_context.chain_id,
+        &request.options,
+        &internal_operation,
+        sequence_number,
+    )
+    .await?;
 
     Ok(ConstructionMetadataResponse {
         metadata: ConstructionMetadata {
@@ -348,6 +448,7 @@ async fn construction_metadata(
             max_gas_amount: max_gas_amount.into(),
             gas_price_per_unit: gas_unit_price.into(),
             expiry_time_secs: request.options.expiry_time_secs,
+            internal_operation,
         },
         suggested_fee: vec![suggested_fee],
     })
@@ -371,10 +472,11 @@ async fn construction_parse(
             unsigned_transaction: None,
             signed_transaction: Some(signed_txn.clone()),
         });
-        let mut account_identifier_signers: Vec<_> = vec![signed_txn.sender().into()];
+        let mut account_identifier_signers: Vec<_> =
+            vec![AccountIdentifier::base_account(signed_txn.sender())];
 
         for account in signed_txn.authenticator().secondary_signer_addreses() {
-            account_identifier_signers.push(account.into())
+            account_identifier_signers.push(AccountIdentifier::base_account(account))
         }
 
         (
@@ -410,11 +512,16 @@ async fn construction_parse(
                 (AccountAddress::ONE, APTOS_ACCOUNT_MODULE, CREATE_ACCOUNT_FUNCTION) => {
                     parse_create_account_operation(sender, &type_args, &args)?
                 }
-                (AccountAddress::ONE, STAKE_MODULE, SET_OPERATOR_FUNCTION) => {
-                    parse_set_operator_operation(sender, &type_args, &args)?
-                }
-                (AccountAddress::ONE, STAKE_MODULE, SET_VOTER_FUNCTION) => {
+                (
+                    AccountAddress::ONE,
+                    STAKING_CONTRACT_MODULE,
+                    SWITCH_OPERATOR_WITH_SAME_COMMISSION_FUNCTION,
+                ) => parse_set_operator_operation(sender, &type_args, &args)?,
+                (AccountAddress::ONE, STAKING_CONTRACT_MODULE, UPDATE_VOTER_FUNCTION) => {
                     parse_set_voter_operation(sender, &type_args, &args)?
+                }
+                (AccountAddress::ONE, STAKING_CONTRACT_MODULE, CREATE_STAKING_CONTRACT) => {
+                    parse_create_stake_pool_operation(sender, &type_args, &args)?
                 }
                 _ => {
                     return Err(ApiError::TransactionParseError(Some(format!(
@@ -513,11 +620,17 @@ fn parse_transfer_operation(
     operations.push(Operation::withdraw(
         0,
         None,
-        sender,
+        AccountIdentifier::base_account(sender),
         currency.clone(),
         amount,
     ));
-    operations.push(Operation::deposit(1, None, receiver, currency, amount));
+    operations.push(Operation::deposit(
+        1,
+        None,
+        AccountIdentifier::base_account(receiver),
+        currency,
+        amount,
+    ));
     Ok(operations)
 }
 
@@ -552,12 +665,41 @@ fn parse_account_transfer_operation(
         )));
     };
 
-    operations.push(Operation::withdraw(0, None, sender, native_coin(), amount));
-    operations.push(Operation::deposit(1, None, receiver, native_coin(), amount));
+    operations.push(Operation::withdraw(
+        0,
+        None,
+        AccountIdentifier::base_account(sender),
+        native_coin(),
+        amount,
+    ));
+    operations.push(Operation::deposit(
+        1,
+        None,
+        AccountIdentifier::base_account(receiver),
+        native_coin(),
+        amount,
+    ));
     Ok(operations)
 }
 
-fn parse_set_operator_operation(
+pub fn parse_function_arg<T: DeserializeOwned>(
+    name: &str,
+    args: &[Vec<u8>],
+    index: usize,
+) -> ApiResult<T> {
+    if let Some(arg) = args.get(index) {
+        if let Ok(arg) = bcs::from_bytes::<T>(arg) {
+            return Ok(arg);
+        }
+    }
+
+    Err(ApiError::InvalidInput(Some(format!(
+        "Argument {} of {} failed to parse",
+        index, name
+    ))))
+}
+
+pub fn parse_set_operator_operation(
     sender: AccountAddress,
     type_args: &[TypeTag],
     args: &[Vec<u8>],
@@ -569,19 +711,19 @@ fn parse_set_operator_operation(
         ))));
     }
 
-    // Set operator
-    if let Some(encoded_operator) = args.first() {
-        let operator: AccountAddress = bcs::from_bytes(encoded_operator)?;
-
-        Ok(vec![Operation::set_operator(0, None, sender, operator)])
-    } else {
-        Err(ApiError::InvalidOperations(Some(
-            "Set operator doesn't have a operator argument".to_string(),
-        )))
-    }
+    let old_operator = parse_function_arg("set_operator", args, 0)?;
+    let new_operator = parse_function_arg("set_operator", args, 1)?;
+    Ok(vec![Operation::set_operator(
+        0,
+        None,
+        sender,
+        Some(AccountIdentifier::base_account(old_operator)),
+        AccountIdentifier::base_account(new_operator),
+        None,
+    )])
 }
 
-fn parse_set_voter_operation(
+pub fn parse_set_voter_operation(
     sender: AccountAddress,
     type_args: &[TypeTag],
     args: &[Vec<u8>],
@@ -593,15 +735,40 @@ fn parse_set_voter_operation(
         ))));
     }
 
-    if let Some(encoded_operator) = args.first() {
-        let operator: AccountAddress = bcs::from_bytes(encoded_operator)?;
+    let operator = parse_function_arg("set_voter", args, 0)?;
+    let new_voter = parse_function_arg("set_voter", args, 1)?;
+    Ok(vec![Operation::set_voter(
+        0,
+        None,
+        sender,
+        Some(AccountIdentifier::base_account(operator)),
+        AccountIdentifier::base_account(new_voter),
+    )])
+}
 
-        Ok(vec![Operation::set_voter(0, None, sender, operator)])
-    } else {
-        Err(ApiError::InvalidOperations(Some(
-            "Set voter doesn't have a voter argument".to_string(),
-        )))
+pub fn parse_create_stake_pool_operation(
+    sender: AccountAddress,
+    type_args: &[TypeTag],
+    args: &[Vec<u8>],
+) -> ApiResult<Vec<Operation>> {
+    if !type_args.is_empty() {
+        return Err(ApiError::TransactionParseError(Some(format!(
+            "Create stake pool should not have type arguments: {:?}",
+            type_args
+        ))));
     }
+
+    let operator = parse_function_arg("create_stake_pool", args, 0)?;
+    let voter = parse_function_arg("create_stake_pool", args, 1)?;
+    let amount: u64 = parse_function_arg("create_stake_pool", args, 2)?;
+    Ok(vec![Operation::create_stake_pool(
+        0,
+        None,
+        sender,
+        Some(operator),
+        Some(voter),
+        Some(amount),
+    )])
 }
 
 /// Construction payloads command (OFFLINE)
@@ -617,12 +784,80 @@ async fn construction_payloads(
     check_network(request.network_identifier, &server_context)?;
 
     // Retrieve the real operation we're doing
-    let operation = InternalOperation::extract(&request.operations)?;
+    let mut operation = InternalOperation::extract(&request.operations)?;
     let metadata = if let Some(ref metadata) = request.metadata {
         metadata
     } else {
         return Err(ApiError::MissingPayloadMetadata);
     };
+
+    // This is a hack to ensure that the payloads actually have overridden operators if not provided
+    match &mut operation {
+        InternalOperation::CreateAccount(_) => {
+            if operation != metadata.internal_operation {
+                return Err(ApiError::InvalidInput(Some(format!(
+                    "CreateAccount operation doesn't match metadata {:?} vs {:?}",
+                    operation, metadata.internal_operation
+                ))));
+            }
+        }
+        InternalOperation::Transfer(_) => {
+            if operation != metadata.internal_operation {
+                return Err(ApiError::InvalidInput(Some(format!(
+                    "Transfer operation doesn't match metadata {:?} vs {:?}",
+                    operation, metadata.internal_operation
+                ))));
+            }
+        }
+        InternalOperation::SetOperator(inner) => {
+            if let InternalOperation::SetOperator(ref metadata_op) = metadata.internal_operation {
+                if inner.owner == metadata_op.owner
+                    && inner.new_operator == metadata_op.new_operator
+                {
+                    if inner.old_operator.is_none() {
+                        inner.old_operator = metadata_op.old_operator;
+                    }
+                } else {
+                    return Err(ApiError::InvalidInput(Some(format!(
+                        "Set operator operation doesn't match metadata {:?} vs {:?}",
+                        inner, metadata.internal_operation
+                    ))));
+                }
+            } else {
+                return Err(ApiError::InvalidInput(Some(format!(
+                    "Set operator operation doesn't match metadata {:?} vs {:?}",
+                    inner, metadata.internal_operation
+                ))));
+            }
+        }
+        InternalOperation::SetVoter(inner) => {
+            if let InternalOperation::SetVoter(ref metadata_op) = metadata.internal_operation {
+                if inner.owner == metadata_op.owner && inner.new_voter == metadata_op.new_voter {
+                    if inner.operator.is_none() {
+                        inner.operator = metadata_op.operator;
+                    }
+                } else {
+                    return Err(ApiError::InvalidInput(Some(format!(
+                        "Set voter operation doesn't match metadata {:?} vs {:?}",
+                        inner, metadata.internal_operation
+                    ))));
+                }
+            } else {
+                return Err(ApiError::InvalidInput(Some(format!(
+                    "Set voter operation doesn't match metadata {:?} vs {:?}",
+                    inner, metadata.internal_operation
+                ))));
+            }
+        }
+        InternalOperation::InitializeStakePool(_) => {
+            if operation != metadata.internal_operation {
+                return Err(ApiError::InvalidInput(Some(format!(
+                    "Initialize stake pool doesn't match metadata {:?} vs {:?}",
+                    operation, metadata.internal_operation
+                ))));
+            }
+        }
+    }
 
     // Encode operation
     let (txn_payload, sender) = operation.payload()?;
@@ -650,7 +885,7 @@ async fn construction_payloads(
         )))
     })?);
     let payload = SigningPayload {
-        account_identifier: AccountIdentifier::from(sender),
+        account_identifier: AccountIdentifier::base_account(sender),
         hex_bytes: signing_message,
         signature_type: Some(SignatureType::Ed25519),
     };
@@ -675,7 +910,7 @@ async fn construction_preprocess(
     check_network(request.network_identifier, &server_context)?;
 
     let internal_operation = InternalOperation::extract(&request.operations)?;
-    let required_public_keys = vec![internal_operation.sender().into()];
+    let required_public_keys = vec![AccountIdentifier::base_account(internal_operation.sender())];
 
     if let Some(max_gas) = request
         .metadata

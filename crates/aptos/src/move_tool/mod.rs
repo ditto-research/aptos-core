@@ -590,7 +590,7 @@ impl CliCommand<&'static str> for DownloadPackage {
     }
 
     async fn execute(self) -> CliTypedResult<&'static str> {
-        let url = self.rest_options.url(&self.profile_options.profile)?;
+        let url = self.rest_options.url(&self.profile_options)?;
         let registry = CachedPackageRegistry::create(url, self.account).await?;
         let output_dir = dir_default_to_current(self.output_dir)?;
 
@@ -666,7 +666,7 @@ impl CliCommand<&'static str> for ListPackage {
     }
 
     async fn execute(self) -> CliTypedResult<&'static str> {
-        let url = self.rest_options.url(&self.profile_options.profile)?;
+        let url = self.rest_options.url(&self.profile_options)?;
         let registry = CachedPackageRegistry::create(url, self.account).await?;
         match self.query {
             ListQuery::Packages => {
@@ -795,6 +795,11 @@ pub struct RunScript {
     /// Example: `address:0x1 bool:true u8:0`
     #[clap(long, multiple_values = true)]
     pub(crate) args: Vec<ArgWithType>,
+    /// TypeTag arguments separated by spaces.
+    ///
+    /// Example: `u8 u64 u128 bool address vector signer`
+    #[clap(long, multiple_values = true)]
+    pub(crate) type_args: Vec<MoveType>,
 }
 
 #[async_trait]
@@ -813,12 +818,19 @@ impl CliCommand<TransactionSummary> for RunScript {
             args.push(arg.try_into()?);
         }
 
+        let mut type_args: Vec<TypeTag> = Vec::new();
+
+        // These TypeArgs are used for generics
+        for type_arg in self.type_args.into_iter() {
+            let type_tag = TypeTag::try_from(type_arg)
+                .map_err(|err| CliError::UnableToParse("--type-args", err.to_string()))?;
+            type_args.push(type_tag)
+        }
+
         let txn = self
             .txn_options
             .submit_transaction(TransactionPayload::Script(Script::new(
-                bytecode,
-                vec![],
-                args,
+                bytecode, type_args, args,
             )))
             .await?;
         Ok(TransactionSummary::from(&txn))
@@ -830,6 +842,7 @@ pub(crate) enum FunctionArgType {
     Address,
     Bool,
     Hex,
+    HexArray,
     String,
     U8,
     U64,
@@ -851,6 +864,18 @@ impl FunctionArgType {
             FunctionArgType::Hex => bcs::to_bytes(
                 &hex::decode(arg).map_err(|err| CliError::UnableToParse("hex", err.to_string()))?,
             ),
+            FunctionArgType::HexArray => {
+                let mut encoded = vec![];
+                for sub_arg in arg.split(',') {
+                    encoded.push(hex::decode(sub_arg).map_err(|err| {
+                        CliError::UnableToParse(
+                            "hex_array",
+                            format!("Failed to parse hex array: {:?}", err.to_string()),
+                        )
+                    })?);
+                }
+                bcs::to_bytes(&encoded)
+            }
             FunctionArgType::String => bcs::to_bytes(arg),
             FunctionArgType::U8 => bcs::to_bytes(
                 &u8::from_str(arg).map_err(|err| CliError::UnableToParse("u8", err.to_string()))?,
@@ -884,8 +909,9 @@ impl FromStr for FunctionArgType {
             "u8" => Ok(FunctionArgType::U8),
             "u64" => Ok(FunctionArgType::U64),
             "u128" => Ok(FunctionArgType::U128),
+            "hex_array" => Ok(FunctionArgType::HexArray),
             "raw" => Ok(FunctionArgType::Raw),
-            str => Err(CliError::CommandArgumentError(format!("Invalid arg type '{}'.  Must be one of: ['address','bool','hex','string','u8','u64','u128','raw']", str))),
+            str => Err(CliError::CommandArgumentError(format!("Invalid arg type '{}'.  Must be one of: ['address','bool','hex','hex_array','string','u8','u64','u128','raw']", str))),
         }
     }
 }
@@ -896,11 +922,42 @@ pub struct ArgWithType {
     pub(crate) arg: Vec<u8>,
 }
 
+impl ArgWithType {
+    pub fn address(account_address: AccountAddress) -> Self {
+        ArgWithType {
+            _ty: FunctionArgType::Address,
+            arg: bcs::to_bytes(&account_address).unwrap(),
+        }
+    }
+
+    pub fn u64(arg: u64) -> Self {
+        ArgWithType {
+            _ty: FunctionArgType::U64,
+            arg: bcs::to_bytes(&arg).unwrap(),
+        }
+    }
+
+    pub fn bytes(arg: Vec<u8>) -> Self {
+        ArgWithType {
+            _ty: FunctionArgType::Raw,
+            arg: bcs::to_bytes(&arg).unwrap(),
+        }
+    }
+    pub fn raw(arg: Vec<u8>) -> Self {
+        ArgWithType {
+            _ty: FunctionArgType::Raw,
+            arg,
+        }
+    }
+}
+
 impl FromStr for ArgWithType {
     type Err = CliError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts: Vec<_> = s.split(':').collect();
+        // Splits on the first colon, returning at most `2` elements
+        // This is required to support args that contain a colon
+        let parts: Vec<_> = s.splitn(2, ':').collect();
         if parts.len() != 2 {
             return Err(CliError::CommandArgumentError(
                 "Arguments must be pairs of <type>:<arg> e.g. bool:true".to_string(),
@@ -928,6 +985,10 @@ impl TryInto<TransactionArgument> for ArgWithType {
             )?)),
             FunctionArgType::Hex => Ok(TransactionArgument::U8Vector(txn_arg_parser(
                 &self.arg, "hex",
+            )?)),
+            FunctionArgType::HexArray => Ok(TransactionArgument::U8Vector(txn_arg_parser(
+                &self.arg,
+                "hex_array",
             )?)),
             FunctionArgType::String => Ok(TransactionArgument::U8Vector(txn_arg_parser(
                 &self.arg, "string",

@@ -10,7 +10,7 @@ use crate::{
         StreamRequest, StreamRequestMessage, StreamingServiceListener, TerminateStreamRequest,
     },
 };
-use aptos_config::config::DataStreamingServiceConfig;
+use aptos_config::config::{AptosDataClientConfig, DataStreamingServiceConfig};
 use aptos_data_client::{AptosDataClient, GlobalDataSummary, OptimalChunkSizes};
 use aptos_id_generator::{IdGenerator, U64IdGenerator};
 use aptos_logger::prelude::*;
@@ -27,8 +27,11 @@ const TERMINATE_NO_FEEDBACK: &str = "no_feedback";
 
 /// The data streaming service that responds to data stream requests.
 pub struct DataStreamingService<T> {
-    // The configuration for this streaming service.
-    config: DataStreamingServiceConfig,
+    // The configuration for the data client
+    data_client_config: AptosDataClientConfig,
+
+    // The configuration for the streaming service
+    streaming_service_config: DataStreamingServiceConfig,
 
     // The data client through which to fetch data from the Aptos network
     aptos_data_client: T,
@@ -49,12 +52,14 @@ pub struct DataStreamingService<T> {
 
 impl<T: AptosDataClient + Send + Clone + 'static> DataStreamingService<T> {
     pub fn new(
-        config: DataStreamingServiceConfig,
+        data_client_config: AptosDataClientConfig,
+        streaming_service_config: DataStreamingServiceConfig,
         aptos_data_client: T,
         stream_requests: StreamingServiceListener,
     ) -> Self {
         Self {
-            config,
+            data_client_config,
+            streaming_service_config,
             aptos_data_client,
             global_data_summary: GlobalDataSummary::empty(),
             data_streams: HashMap::new(),
@@ -67,11 +72,12 @@ impl<T: AptosDataClient + Send + Clone + 'static> DataStreamingService<T> {
     /// Starts the dedicated streaming service
     pub async fn start_service(mut self) {
         let mut data_refresh_interval = IntervalStream::new(interval(Duration::from_millis(
-            self.config.global_summary_refresh_interval_ms,
+            self.streaming_service_config
+                .global_summary_refresh_interval_ms,
         )))
         .fuse();
         let mut progress_check_interval = IntervalStream::new(interval(Duration::from_millis(
-            self.config.progress_check_interval_ms,
+            self.streaming_service_config.progress_check_interval_ms,
         )))
         .fuse();
 
@@ -95,7 +101,7 @@ impl<T: AptosDataClient + Send + Clone + 'static> DataStreamingService<T> {
         if let StreamRequest::TerminateStream(request) = request_message.stream_request {
             // Process the feedback request
             if let Err(error) = self.process_terminate_stream_request(&request) {
-                error!(LogSchema::new(LogEntry::HandleTerminateRequest)
+                warn!(LogSchema::new(LogEntry::HandleTerminateRequest)
                     .event(LogEvent::Error)
                     .error(&error));
             }
@@ -107,7 +113,7 @@ impl<T: AptosDataClient + Send + Clone + 'static> DataStreamingService<T> {
         if let Err(error) = &response {
             sample!(
                 SampleRate::Duration(Duration::from_secs(STREAM_REQUEST_ERROR_LOG_FREQ_SECS)),
-                error!(LogSchema::new(LogEntry::HandleStreamRequest)
+                warn!(LogSchema::new(LogEntry::HandleStreamRequest)
                     .event(LogEvent::Error)
                     .error(error));
             );
@@ -115,7 +121,7 @@ impl<T: AptosDataClient + Send + Clone + 'static> DataStreamingService<T> {
 
         // Send the response to the client
         if let Err(error) = request_message.response_sender.send(response) {
-            error!(LogSchema::new(LogEntry::RespondToStreamRequest)
+            warn!(LogSchema::new(LogEntry::RespondToStreamRequest)
                 .event(LogEvent::Error)
                 .message(&format!(
                     "Failed to send response for stream request: {:?}",
@@ -195,7 +201,8 @@ impl<T: AptosDataClient + Send + Clone + 'static> DataStreamingService<T> {
         // Create a new data stream
         let stream_id = self.stream_id_generator.next();
         let (data_stream, stream_listener) = DataStream::new(
-            self.config,
+            self.data_client_config,
+            self.streaming_service_config,
             stream_id,
             &request_message.stream_request,
             self.aptos_data_client.clone(),
@@ -231,7 +238,7 @@ impl<T: AptosDataClient + Send + Clone + 'static> DataStreamingService<T> {
             metrics::increment_counter(&metrics::GLOBAL_DATA_SUMMARY_ERROR, error.get_label());
             sample!(
                 SampleRate::Duration(Duration::from_secs(GLOBAL_DATA_REFRESH_LOG_FREQ_SECS)),
-                error!(LogSchema::new(LogEntry::RefreshGlobalData)
+                warn!(LogSchema::new(LogEntry::RefreshGlobalData)
                     .event(LogEvent::Error)
                     .error(&error))
             );
@@ -273,7 +280,7 @@ impl<T: AptosDataClient + Send + Clone + 'static> DataStreamingService<T> {
                         &metrics::CHECK_STREAM_PROGRESS_ERROR,
                         error.get_label(),
                     );
-                    error!(LogSchema::new(LogEntry::CheckStreamProgress)
+                    warn!(LogSchema::new(LogEntry::CheckStreamProgress)
                         .stream_id(*data_stream_id)
                         .event(LogEvent::Error)
                         .error(&error));

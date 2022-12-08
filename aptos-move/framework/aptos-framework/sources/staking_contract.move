@@ -30,13 +30,13 @@ module aptos_framework::staking_contract {
     use std::signer;
     use std::vector;
 
-    use aptos_std::event::{EventHandle, emit_event};
     use aptos_std::pool_u64::{Self, Pool};
     use aptos_std::simple_map::{Self, SimpleMap};
 
     use aptos_framework::account::{Self, SignerCapability};
     use aptos_framework::aptos_coin::AptosCoin;
     use aptos_framework::coin::{Self, Coin};
+    use aptos_framework::event::{EventHandle, emit_event};
     use aptos_framework::stake::{Self, OwnerCapability};
     use aptos_framework::staking_config;
 
@@ -729,7 +729,8 @@ module aptos_framework::staking_contract {
         assert!(last_recorded_principal(staker_address, operator_address) == INITIAL_BALANCE, 0);
 
         // Operator joins the validator set.
-        stake::join_validator_set_for_test(operator, pool_address, true);
+        let (_sk, pk, pop) = stake::generate_identity();
+        stake::join_validator_set_for_test(&pk, &pop, operator, pool_address, true);
         assert!(stake::get_validator_state(pool_address) == VALIDATOR_STATUS_ACTIVE, 1);
 
         // Fast forward to generate rewards.
@@ -825,7 +826,8 @@ module aptos_framework::staking_contract {
         let pool_address = stake_pool_address(staker_address, operator_address);
 
         // Operator joins the validator set.
-        stake::join_validator_set_for_test(operator, pool_address, true);
+        let (_sk, pk, pop) = stake::generate_identity();
+        stake::join_validator_set_for_test(&pk, &pop, operator, pool_address, true);
         assert!(stake::get_validator_state(pool_address) == VALIDATOR_STATUS_ACTIVE, 1);
 
         // Fast forward to generate rewards.
@@ -852,7 +854,8 @@ module aptos_framework::staking_contract {
         let pool_address = stake_pool_address(staker_address, operator_address);
 
         // Operator joins the validator set.
-        stake::join_validator_set_for_test(operator, pool_address, true);
+        let (_sk, pk, pop) = stake::generate_identity();
+        stake::join_validator_set_for_test(&pk, &pop, operator, pool_address, true);
         assert!(stake::get_validator_state(pool_address) == VALIDATOR_STATUS_ACTIVE, 1);
 
         // Fast forward to generate rewards.
@@ -951,7 +954,8 @@ module aptos_framework::staking_contract {
 
         // Join validator set and earn some rewards.
         let pool_address = stake_pool_address(staker_address, operator_1_address);
-        stake::join_validator_set_for_test(operator_1, pool_address, true);
+        let (_sk, pk, pop) = stake::generate_identity();
+        stake::join_validator_set_for_test(&pk, &pop, operator_1, pool_address, true);
         stake::end_epoch();
         assert!(stake::get_validator_state(pool_address) == VALIDATOR_STATUS_ACTIVE, 0);
 
@@ -1041,7 +1045,8 @@ module aptos_framework::staking_contract {
         let pool_address = stake_pool_address(staker_address, operator_address);
 
         // Operator joins the validator set so rewards are generated.
-        stake::join_validator_set_for_test(operator, pool_address, true);
+        let (_sk, pk, pop) = stake::generate_identity();
+        stake::join_validator_set_for_test(&pk, &pop, operator, pool_address, true);
         assert!(stake::get_validator_state(pool_address) == VALIDATOR_STATUS_ACTIVE, 1);
 
         // Fast forward to generate rewards.
@@ -1123,7 +1128,8 @@ module aptos_framework::staking_contract {
         let pool_address = stake_pool_address(staker_address, operator_address);
 
         // Operator joins the validator set so rewards are generated.
-        stake::join_validator_set_for_test(operator, pool_address, true);
+        let (_sk, pk, pop) = stake::generate_identity();
+        stake::join_validator_set_for_test(&pk, &pop, operator, pool_address, true);
         assert!(stake::get_validator_state(pool_address) == VALIDATOR_STATUS_ACTIVE, 1);
 
         // Fast forward to generate rewards.

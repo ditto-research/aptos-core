@@ -101,6 +101,7 @@ pub struct NodeConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct BaseConfig {
     pub data_dir: PathBuf,
+    pub working_dir: Option<PathBuf>,
     pub role: RoleType,
     pub waypoint: WaypointConfig,
 }
@@ -109,6 +110,7 @@ impl Default for BaseConfig {
     fn default() -> BaseConfig {
         BaseConfig {
             data_dir: PathBuf::from("/opt/aptos/data"),
+            working_dir: None,
             role: RoleType::Validator,
             waypoint: WaypointConfig::None,
         }
@@ -266,6 +268,13 @@ impl NodeConfig {
         &self.base.data_dir
     }
 
+    pub fn working_dir(&self) -> &Path {
+        match &self.base.working_dir {
+            Some(working_dir) => working_dir,
+            None => &self.base.data_dir,
+        }
+    }
+
     pub fn set_data_dir(&mut self, data_dir: PathBuf) {
         self.base.data_dir = data_dir.clone();
         self.consensus.set_data_dir(data_dir.clone());
@@ -336,11 +345,18 @@ impl NodeConfig {
 
         self.indexer.starting_version = match std::env::var("STARTING_VERSION").ok() {
             None => self.indexer.starting_version,
-            Some(s) => Some(s.parse().map_err(|_| {
-                Error::InvariantViolation(
-                    "Could not parse 'STARTING_VERSION' env var as u64".to_string(),
-                )
-            })?),
+            Some(s) => match s.parse::<u64>() {
+                Ok(version) => Some(version),
+                Err(_) => {
+                    // Doing this instead of failing. This will allow a processor to have STARTING_VERSION: undefined when deploying
+                    aptos_logger::warn!(
+                        "Invalid STARTING_VERSION: {}, using {:?} instead",
+                        s,
+                        self.indexer.starting_version
+                    );
+                    self.indexer.starting_version
+                }
+            },
         };
 
         self.indexer.skip_migrations = self.indexer.skip_migrations.or(Some(false));

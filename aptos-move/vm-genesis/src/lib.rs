@@ -21,9 +21,7 @@ use aptos_types::{
     account_config::{self, events::NewEpochEvent, CORE_CODE_ADDRESS},
     chain_id::ChainId,
     contract_event::ContractEvent,
-    on_chain_config::{
-        ConsensusConfigV1, GasScheduleV2, OnChainConsensusConfig, APTOS_MAX_KNOWN_VERSION,
-    },
+    on_chain_config::{GasScheduleV2, OnChainConsensusConfig, APTOS_MAX_KNOWN_VERSION},
     transaction::{authenticator::AuthenticationKey, ChangeSet, Transaction, WriteSetPayload},
 };
 use aptos_vm::{
@@ -79,6 +77,14 @@ pub static GENESIS_KEYPAIR: Lazy<(Ed25519PrivateKey, Ed25519PublicKey)> = Lazy::
     (private_key, public_key)
 });
 
+// Cannot be impl Default in GasScheduleV2, due to circular dependencies.
+pub fn default_gas_schedule() -> GasScheduleV2 {
+    GasScheduleV2 {
+        feature_version: aptos_gas::LATEST_GAS_FEATURE_VERSION,
+        entries: AptosGasParameters::initial().to_on_chain_gas_schedule(),
+    }
+}
+
 pub fn encode_aptos_mainnet_genesis_transaction(
     accounts: &[AccountBalance],
     employees: &[EmployeePool],
@@ -101,14 +107,23 @@ pub fn encode_aptos_mainnet_genesis_transaction(
         AbstractValueSizeGasParameters::zeros(),
         LATEST_GAS_FEATURE_VERSION,
         Features::default().is_enabled(FeatureFlag::TREAT_FRIEND_AS_PRIVATE),
+        ChainId::test().id(),
     )
     .unwrap();
     let id1 = HashValue::zero();
     let mut session = move_vm.new_session(&data_cache, SessionId::genesis(id1));
 
     // On-chain genesis process.
-    let consensus_config = OnChainConsensusConfig::V1(ConsensusConfigV1::default());
-    initialize(&mut session, consensus_config, chain_id, genesis_config);
+    let consensus_config = OnChainConsensusConfig::default();
+    let gas_schedule = default_gas_schedule();
+    initialize(
+        &mut session,
+        chain_id,
+        genesis_config,
+        &consensus_config,
+        &gas_schedule,
+    );
+    initialize_features(&mut session);
     initialize_aptos_coin(&mut session);
     initialize_on_chain_governance(&mut session, genesis_config);
     create_accounts(&mut session, accounts);
@@ -134,7 +149,9 @@ pub fn encode_aptos_mainnet_genesis_transaction(
 
     session1_out.squash(session2_out).unwrap();
 
-    let change_set_ext = session1_out.into_change_set(&mut ()).unwrap();
+    let change_set_ext = session1_out
+        .into_change_set(&mut (), LATEST_GAS_FEATURE_VERSION)
+        .unwrap();
     let (delta_change_set, change_set) = change_set_ext.into_inner();
 
     // Publishing stdlib should not produce any deltas around aggregators and map to write ops and
@@ -158,17 +175,18 @@ pub fn encode_genesis_transaction(
     validators: &[Validator],
     framework: &ReleaseBundle,
     chain_id: ChainId,
-    genesis_config: GenesisConfiguration,
+    genesis_config: &GenesisConfiguration,
+    consensus_config: &OnChainConsensusConfig,
+    gas_schedule: &GasScheduleV2,
 ) -> Transaction {
-    let consensus_config = OnChainConsensusConfig::V1(ConsensusConfigV1::default());
-
     Transaction::GenesisTransaction(WriteSetPayload::Direct(encode_genesis_change_set(
         &aptos_root_key,
         validators,
         framework,
-        consensus_config,
         chain_id,
-        &genesis_config,
+        genesis_config,
+        consensus_config,
+        gas_schedule,
     )))
 }
 
@@ -176,9 +194,10 @@ pub fn encode_genesis_change_set(
     core_resources_key: &Ed25519PublicKey,
     validators: &[Validator],
     framework: &ReleaseBundle,
-    consensus_config: OnChainConsensusConfig,
     chain_id: ChainId,
     genesis_config: &GenesisConfiguration,
+    consensus_config: &OnChainConsensusConfig,
+    gas_schedule: &GasScheduleV2,
 ) -> ChangeSet {
     validate_genesis_config(genesis_config);
 
@@ -193,13 +212,21 @@ pub fn encode_genesis_change_set(
         AbstractValueSizeGasParameters::zeros(),
         LATEST_GAS_FEATURE_VERSION,
         Features::default().is_enabled(FeatureFlag::TREAT_FRIEND_AS_PRIVATE),
+        ChainId::test().id(),
     )
     .unwrap();
     let id1 = HashValue::zero();
     let mut session = move_vm.new_session(&data_cache, SessionId::genesis(id1));
 
     // On-chain genesis process.
-    initialize(&mut session, consensus_config, chain_id, genesis_config);
+    initialize(
+        &mut session,
+        chain_id,
+        genesis_config,
+        consensus_config,
+        gas_schedule,
+    );
+    initialize_features(&mut session);
     if genesis_config.is_test {
         initialize_core_resources_and_aptos_coin(&mut session, core_resources_key);
     } else {
@@ -230,7 +257,9 @@ pub fn encode_genesis_change_set(
 
     session1_out.squash(session2_out).unwrap();
 
-    let change_set_ext = session1_out.into_change_set(&mut ()).unwrap();
+    let change_set_ext = session1_out
+        .into_change_set(&mut (), LATEST_GAS_FEATURE_VERSION)
+        .unwrap();
     let (delta_change_set, change_set) = change_set_ext.into_inner();
 
     // Publishing stdlib should not produce any deltas around aggregators and map to write ops and
@@ -316,19 +345,16 @@ fn exec_function(
 
 fn initialize(
     session: &mut SessionExt<impl MoveResolver>,
-    consensus_config: OnChainConsensusConfig,
     chain_id: ChainId,
     genesis_config: &GenesisConfiguration,
+    consensus_config: &OnChainConsensusConfig,
+    gas_schedule: &GasScheduleV2,
 ) {
-    let gas_schedule = GasScheduleV2 {
-        feature_version: aptos_gas::LATEST_GAS_FEATURE_VERSION,
-        entries: AptosGasParameters::initial().to_on_chain_gas_schedule(),
-    };
     let gas_schedule_blob =
-        bcs::to_bytes(&gas_schedule).expect("Failure serializing genesis gas schedule");
+        bcs::to_bytes(gas_schedule).expect("Failure serializing genesis gas schedule");
 
     let consensus_config_bytes =
-        bcs::to_bytes(&consensus_config).expect("Failure serializing genesis consensus config");
+        bcs::to_bytes(consensus_config).expect("Failure serializing genesis consensus config");
 
     // Calculate the per-epoch rewards rate, represented as 2 separate ints (numerator and
     // denominator).
@@ -361,6 +387,22 @@ fn initialize(
             MoveValue::U64(rewards_rate_denominator),
             MoveValue::U64(genesis_config.voting_power_increase_limit),
         ]),
+    );
+}
+
+fn initialize_features(session: &mut SessionExt<impl MoveResolver>) {
+    let features: Vec<u64> = vec![1, 2];
+
+    let mut serialized_values = serialize_values(&vec![MoveValue::Signer(CORE_CODE_ADDRESS)]);
+    serialized_values.push(bcs::to_bytes(&features).unwrap());
+    serialized_values.push(bcs::to_bytes(&Vec::<u64>::new()).unwrap());
+
+    exec_function(
+        session,
+        "features",
+        "change_feature_flags",
+        vec![],
+        serialized_values,
     );
 }
 
@@ -591,8 +633,15 @@ pub enum GenesisOptions {
 
 /// Generate an artificial genesis `ChangeSet` for testing
 pub fn generate_genesis_change_set_for_testing(genesis_options: GenesisOptions) -> ChangeSet {
+    generate_genesis_change_set_for_testing_with_count(genesis_options, 1)
+}
+
+pub fn generate_genesis_change_set_for_testing_with_count(
+    genesis_options: GenesisOptions,
+    count: u64,
+) -> ChangeSet {
     let framework = match genesis_options {
-        GenesisOptions::Head => cached_packages::head_release_bundle(),
+        GenesisOptions::Head => aptos_cached_packages::head_release_bundle(),
         GenesisOptions::Testnet => framework::testnet_release_bundle(),
         GenesisOptions::Mainnet => {
             // We don't yet have mainnet, so returning testnet here
@@ -600,13 +649,13 @@ pub fn generate_genesis_change_set_for_testing(genesis_options: GenesisOptions) 
         }
     };
 
-    generate_test_genesis(framework, Some(1)).0
+    generate_test_genesis(framework, Some(count as usize)).0
 }
 
 /// Generate a genesis `ChangeSet` for mainnet
 pub fn generate_genesis_change_set_for_mainnet(genesis_options: GenesisOptions) -> ChangeSet {
     let framework = match genesis_options {
-        GenesisOptions::Head => cached_packages::head_release_bundle(),
+        GenesisOptions::Head => aptos_cached_packages::head_release_bundle(),
         GenesisOptions::Testnet => framework::testnet_release_bundle(),
         // We don't yet have mainnet, so returning testnet here
         GenesisOptions::Mainnet => framework::testnet_release_bundle(),
@@ -623,7 +672,7 @@ pub fn test_genesis_transaction() -> Transaction {
 pub fn test_genesis_change_set_and_validators(
     count: Option<usize>,
 ) -> (ChangeSet, Vec<TestValidator>) {
-    generate_test_genesis(cached_packages::head_release_bundle(), count)
+    generate_test_genesis(aptos_cached_packages::head_release_bundle(), count)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -709,7 +758,6 @@ pub fn generate_test_genesis(
         &GENESIS_KEYPAIR.1,
         validators,
         framework,
-        OnChainConsensusConfig::default(),
         ChainId::test(),
         &GenesisConfiguration {
             allow_new_validators: true,
@@ -727,6 +775,8 @@ pub fn generate_test_genesis(
             employee_vesting_start: 1663456089,
             employee_vesting_period_duration: 5 * 60, // 5 minutes
         },
+        &OnChainConsensusConfig::default(),
+        &default_gas_schedule(),
     );
     (genesis, test_validators)
 }
@@ -744,9 +794,10 @@ pub fn generate_mainnet_genesis(
         &GENESIS_KEYPAIR.1,
         validators,
         framework,
-        OnChainConsensusConfig::default(),
         ChainId::test(),
         &mainnet_genesis_config(),
+        &OnChainConsensusConfig::default(),
+        &default_gas_schedule(),
     );
     (genesis, test_validators)
 }
@@ -799,7 +850,8 @@ pub struct ValidatorWithCommissionRate {
 pub fn test_genesis_module_publishing() {
     // create a state view for move_vm
     let mut state_view = GenesisStateView::new();
-    for (module_bytes, module) in cached_packages::head_release_bundle().code_and_compiled_modules()
+    for (module_bytes, module) in
+        aptos_cached_packages::head_release_bundle().code_and_compiled_modules()
     {
         state_view.add_module(&module.self_id(), module_bytes);
     }
@@ -810,11 +862,12 @@ pub fn test_genesis_module_publishing() {
         AbstractValueSizeGasParameters::zeros(),
         LATEST_GAS_FEATURE_VERSION,
         false,
+        ChainId::test().id(),
     )
     .unwrap();
     let id1 = HashValue::zero();
     let mut session = move_vm.new_session(&data_cache, SessionId::genesis(id1));
-    publish_framework(&mut session, cached_packages::head_release_bundle());
+    publish_framework(&mut session, aptos_cached_packages::head_release_bundle());
 }
 
 #[test]
@@ -1007,7 +1060,7 @@ pub fn test_mainnet_end_to_end() {
         &accounts,
         &employees,
         &validators,
-        cached_packages::head_release_bundle(),
+        aptos_cached_packages::head_release_bundle(),
         ChainId::mainnet(),
         &mainnet_genesis_config(),
     );

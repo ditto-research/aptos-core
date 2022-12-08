@@ -9,10 +9,8 @@ use aptos_types::{
 };
 use handlebars::Handlebars;
 
-use move_deps::{
-    move_command_line_common::env::get_bytecode_version_from_env,
-    move_compiler::{compiled_unit::AnnotatedCompiledUnit, Compiler, Flags},
-};
+use move_command_line_common::env::get_bytecode_version_from_env;
+use move_compiler::{compiled_unit::AnnotatedCompiledUnit, Compiler, Flags};
 use serde::Serialize;
 use std::{collections::HashMap, io::Write, path::PathBuf};
 use tempfile::NamedTempFile;
@@ -23,7 +21,9 @@ pub const SCRIPTS_DIR_PATH: &str = "templates";
 pub fn compile_script(source_file_str: String) -> Vec<u8> {
     let (_files, mut compiled_program) = Compiler::from_files(
         vec![source_file_str],
-        cached_packages::head_release_bundle().files().unwrap(),
+        aptos_cached_packages::head_release_bundle()
+            .files()
+            .unwrap(),
         framework::named_addresses().clone(),
     )
     .set_flags(Flags::empty().set_sources_shadow_deps(false))

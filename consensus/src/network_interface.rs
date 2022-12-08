@@ -6,11 +6,7 @@
 use crate::counters;
 use anyhow::anyhow;
 use aptos_config::network_id::{NetworkId, PeerNetworkId};
-use aptos_logger::prelude::*;
-use aptos_types::{epoch_change::EpochChangeProof, PeerId};
-use async_trait::async_trait;
-use channel::{aptos_channel, message_queues::QueueStyle};
-use consensus_types::{
+use aptos_consensus_types::{
     block_retrieval::{BlockRetrievalRequest, BlockRetrievalResponse},
     epoch_retrieval::EpochRetrievalRequest,
     experimental::{commit_decision::CommitDecision, commit_vote::CommitVote},
@@ -18,6 +14,10 @@ use consensus_types::{
     sync_info::SyncInfo,
     vote_msg::VoteMsg,
 };
+use aptos_logger::prelude::*;
+use aptos_types::{epoch_change::EpochChangeProof, PeerId};
+use async_trait::async_trait;
+use channel::{aptos_channel, message_queues::QueueStyle};
 use network::{
     application::storage::PeerMetadataStorage,
     constants::NETWORK_CHANNEL_SIZE,
@@ -205,7 +205,7 @@ impl ApplicationNetworkSender<ConsensusMsg> for ConsensusNetworkSender {
         if !not_available.is_empty() {
             sample!(
                 SampleRate::Duration(Duration::from_secs(10)),
-                error!("Unavailable peers: {:?}", not_available)
+                warn!("Unavailable peers: {:?}", not_available)
             );
         }
         for (protocol, peers) in peers_per_protocol {

@@ -18,7 +18,11 @@ xclippy = [
   "-Aclippy::needless-collect",
   "-Aclippy::enum-variant-names",
   "-Aclippy::self-named-constructors",
+  "-Aclippy::single-match"
 ]
 
 [build]
-rustflags = ["--cfg", "tokio_unstable"]
+rustflags = ["--cfg", "tokio_unstable", "-C", "force-frame-pointers=yes", "-C", "force-unwind-tables=yes"]
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["--cfg", "tokio_unstable", "-C", "link-arg=-fuse-ld=lld", "-C", "force-frame-pointers=yes", "-C", "force-unwind-tables=yes"]

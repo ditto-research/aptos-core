@@ -11,13 +11,7 @@ use crate::{
     state_replication::StateComputer,
 };
 use anyhow::{bail, Context};
-use aptos_crypto::HashValue;
-use aptos_logger::prelude::*;
-use aptos_types::{
-    account_address::AccountAddress, epoch_change::EpochChangeProof,
-    ledger_info::LedgerInfoWithSignatures,
-};
-use consensus_types::{
+use aptos_consensus_types::{
     block::Block,
     block_retrieval::{
         BlockRetrievalRequest, BlockRetrievalResponse, BlockRetrievalStatus,
@@ -26,6 +20,12 @@ use consensus_types::{
     common::Author,
     quorum_cert::QuorumCert,
     sync_info::SyncInfo,
+};
+use aptos_crypto::HashValue;
+use aptos_logger::prelude::*;
+use aptos_types::{
+    account_address::AccountAddress, epoch_change::EpochChangeProof,
+    ledger_info::LedgerInfoWithSignatures,
 };
 use fail::fail_point;
 use rand::{prelude::*, Rng};
@@ -260,11 +260,15 @@ impl BlockStore {
             .iter()
             .any(|block| block.id() == highest_commit_cert.certified_block().id())
         {
+            info!(
+                "Found forked QC {}, fetching it as well",
+                highest_commit_cert
+            );
             let mut additional_blocks = retriever
                 .retrieve_block_for_qc(
                     highest_commit_cert,
                     1,
-                    highest_commit_cert.commit_info().id(),
+                    highest_commit_cert.certified_block().id(),
                 )
                 .await?;
 

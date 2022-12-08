@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::common::types::{CliCommand, CliTypedResult, TransactionOptions};
+use aptos_cached_packages::aptos_stdlib;
 use aptos_rest_client::aptos_api_types::HashValue;
 use aptos_rest_client::{
     aptos_api_types::{WriteResource, WriteSetChange},
@@ -9,16 +10,17 @@ use aptos_rest_client::{
 };
 use aptos_types::account_address::AccountAddress;
 use async_trait::async_trait;
-use cached_packages::aptos_stdlib;
 use clap::Parser;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
-/// Command to transfer APT coins between accounts
+// TODO: Add ability to transfer non-APT coins
+// TODO: Add ability to not create account by default
+/// Transfer APT between accounts
 ///
 #[derive(Debug, Parser)]
 pub struct TransferCoins {
-    /// Address of account you want to send APT coins to
+    /// Address of account to send APT to
     #[clap(long, parse(try_from_str = crate::common::types::load_account_arg))]
     pub(crate) account: AccountAddress,
 

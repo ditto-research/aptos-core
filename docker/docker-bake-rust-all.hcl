@@ -18,6 +18,8 @@ variable "GIT_SHA" {}
 
 variable "GIT_BRANCH" {}
 
+variable "GIT_CREDENTIALS" {}
+
 variable "GIT_TAG" {}
 
 variable "BUILT_VIA_BUILDKIT" {}
@@ -37,8 +39,8 @@ variable "ecr_base" {
 
 variable "NORMALIZED_GIT_BRANCH_OR_PR" {}
 variable "IMAGE_TAG_PREFIX" {}
-variable "BUILD_TEST_IMAGES" {
-  // Whether to build test images
+variable "BUILD_ADDL_TESTING_IMAGES" {
+  // Whether to build additional testing images
   default = "false"
 }
 variable "PROFILE" {
@@ -57,7 +59,7 @@ group "all" {
     "faucet",
     "forge",
     "telemetry-service",
-    BUILD_TEST_IMAGES == "true" ? [
+    BUILD_ADDL_TESTING_IMAGES == "true" ? [
       "validator-testing"
     ] : []
   ])
@@ -89,6 +91,7 @@ target "_common" {
     GIT_SHA            = "${GIT_SHA}"
     GIT_BRANCH         = "${GIT_BRANCH}"
     GIT_TAG            = "${GIT_TAG}"
+    GIT_CREDENTIALS    = "${GIT_CREDENTIALS}"
     BUILD_DATE         = "${BUILD_DATE}"
     BUILT_VIA_BUILDKIT = "true"
   }

@@ -91,7 +91,7 @@ pub fn new_test_context(test_name: String, use_db_with_indexer: bool) -> TestCon
     let mut rng = ::rand::rngs::StdRng::from_seed([0u8; 32]);
     let builder = aptos_genesis::builder::Builder::new(
         tmp_dir.path(),
-        cached_packages::head_release_bundle().clone(),
+        aptos_cached_packages::head_release_bundle().clone(),
     )
     .unwrap()
     .with_init_genesis_config(Some(Arc::new(|genesis_config| {
@@ -306,6 +306,30 @@ impl TestContext {
     pub fn create_user_account(&self, account: &LocalAccount) -> SignedTransaction {
         let mut tc = self.root_account();
         self.create_user_account_by(&mut tc, account)
+    }
+
+    pub fn mint_user_account(&self, account: &LocalAccount) -> SignedTransaction {
+        let mut tc = self.root_account();
+        let factory = self.transaction_factory();
+        tc.sign_with_transaction_builder(
+            factory
+                .account_transfer(account.address(), 10_000_000)
+                .expiration_timestamp_secs(u64::MAX),
+        )
+    }
+
+    pub fn account_transfer(
+        &self,
+        sender: &mut LocalAccount,
+        receiver: &LocalAccount,
+        amount: u64,
+    ) -> SignedTransaction {
+        let factory = self.transaction_factory();
+        sender.sign_with_transaction_builder(
+            factory
+                .account_transfer(receiver.address(), amount)
+                .expiration_timestamp_secs(u64::MAX),
+        )
     }
 
     pub fn create_user_account_by(

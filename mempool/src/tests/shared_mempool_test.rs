@@ -6,8 +6,8 @@ use crate::{
     tests::common::{batch_add_signed_txn, TestTransaction},
     QuorumStoreRequest,
 };
+use aptos_consensus_types::common::RejectedTransactionSummary;
 use aptos_types::transaction::Transaction;
-use consensus_types::common::RejectedTransactionSummary;
 use futures::{channel::oneshot, executor::block_on, sink::SinkExt};
 use mempool_notifications::MempoolNotificationSender;
 use tokio::runtime::Builder;
@@ -47,7 +47,8 @@ fn test_consensus_events_rejected_txns() {
     });
 
     let pool = smp.mempool.lock();
-    let (timeline, _) = pool.read_timeline(&vec![0, 0, 0, 0, 0, 0].into(), 10);
+    // TODO: make less brittle to broadcast buckets changes
+    let (timeline, _) = pool.read_timeline(&vec![0; 10].into(), 10);
     assert_eq!(timeline.len(), 2);
     assert_eq!(timeline.first().unwrap(), &kept_txn);
 }
@@ -93,7 +94,8 @@ fn test_mempool_notify_committed_txns() {
     });
 
     let pool = smp.mempool.lock();
-    let (timeline, _) = pool.read_timeline(&vec![0, 0, 0, 0, 0, 0].into(), 10);
+    // TODO: make less brittle to broadcast buckets changes
+    let (timeline, _) = pool.read_timeline(&vec![0; 10].into(), 10);
     assert_eq!(timeline.len(), 1);
     assert_eq!(timeline.first().unwrap(), &kept_txn);
 }

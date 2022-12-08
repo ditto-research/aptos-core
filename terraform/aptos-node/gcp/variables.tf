@@ -97,7 +97,7 @@ variable "utility_instance_enable_taint" {
 
 variable "validator_instance_type" {
   description = "Instance type used for validator and fullnodes"
-  default     = "c2-standard-16"
+  default     = "n2-standard-32"
 }
 
 variable "validator_instance_num" {
@@ -141,4 +141,9 @@ variable "node_exporter_helm_values" {
   description = "Map of values to pass to node exporter Helm"
   type        = any
   default     = {}
+}
+
+variable "manage_via_tf" {
+  description = "Whether to manage the aptos-node k8s workload via Terraform"
+  default     = true
 }

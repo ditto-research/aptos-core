@@ -20,7 +20,7 @@ jobs:
   check-minimum-revision:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@93ea575cb5d8a053eaa0ac8fa3b40d7e05a33cc8 # pin@v3
         with:
           ref: ${{ env.GIT_SHA }}
           fetch-depth: 1000
@@ -42,7 +42,7 @@ jobs:
           FAILED=$?
           set -e
 
-          echo "::set-output name=FAIL_MERGE_BASE::$FAILED"
+          echo "FAIL_MERGE_BASE=${FAILED}" >> $GITHUB_OUTPUT
           MERGE_BASE="$(git merge-base origin/main ${{ env.GIT_SHA }})"
 
           if [[ $FAILED == 1 ]]; then

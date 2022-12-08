@@ -4,10 +4,10 @@
 use std::time::{Duration, Instant};
 
 use anyhow::bail;
+use aptos_cached_packages::aptos_stdlib;
 use aptos_config::config::NodeConfig;
 use aptos_rest_client::Client as RestClient;
 use aptos_types::account_address::AccountAddress;
-use cached_packages::aptos_stdlib;
 use forge::NodeExt;
 use forge::Result;
 use forge::Swarm;
@@ -49,7 +49,10 @@ async fn test_indexer() {
         .await
         .unwrap();
     // TODO(Gas): double check if this is correct
-    chain_info.mint(account1.address(), 100_000).await.unwrap();
+    chain_info
+        .mint(account1.address(), 10_000_000)
+        .await
+        .unwrap();
     chain_info
         .create_user_account(account2.public_key())
         .await

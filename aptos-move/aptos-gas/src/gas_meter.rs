@@ -11,7 +11,9 @@ use crate::{
     transaction::StorageGasParameters,
     transaction::TransactionGasParameters,
 };
-use aptos_types::{state_store::state_key::StateKey, write_set::WriteOp};
+use aptos_types::{
+    account_config::CORE_CODE_ADDRESS, state_store::state_key::StateKey, write_set::WriteOp,
+};
 use move_binary_format::errors::{Location, PartialVMError, PartialVMResult, VMResult};
 use move_core_types::{
     gas_algebra::{InternalGas, NumArgs, NumBytes},
@@ -25,15 +27,23 @@ use move_vm_types::{
 use std::collections::BTreeMap;
 
 // Change log:
+// - V4
+//   - Consider memory leaked for event natives
 // - V3
 //   - Add memory quota
+//   - Storage charges:
+//     - Distinguish between new and existing resources
+//     - One item write comes with 1K free bytes
+//     - abort with STORATGE_WRITE_LIMIT_REACHED if WriteOps or Events are too large
 // - V2
 //   - Table
 //     - Fix the gas formula for loading resources so that they are consistent with other
 //       global operations.
 // - V1
 //   - TBA
-pub const LATEST_GAS_FEATURE_VERSION: u64 = 3;
+pub const LATEST_GAS_FEATURE_VERSION: u64 = 4;
+
+pub(crate) const EXECUTION_GAS_MULTIPLIER: u64 = 20;
 
 /// A trait for converting from a map representation of the on-chain gas schedule.
 pub trait FromOnChainGasSchedule: Sized {
@@ -166,6 +176,8 @@ pub struct AptosGasMeter {
     storage_gas_params: Option<StorageGasParameters>,
     balance: InternalGas,
     memory_quota: AbstractValueSize,
+
+    should_leak_memory_for_native: bool,
 }
 
 impl AptosGasMeter {
@@ -190,6 +202,7 @@ impl AptosGasMeter {
             storage_gas_params,
             balance,
             memory_quota,
+            should_leak_memory_for_native: false,
         }
     }
 
@@ -236,6 +249,10 @@ impl AptosGasMeter {
             self.memory_quota += amount;
         }
     }
+
+    pub fn feature_version(&self) -> u64 {
+        self.feature_version
+    }
 }
 
 impl GasMeter for AptosGasMeter {
@@ -251,6 +268,11 @@ impl GasMeter for AptosGasMeter {
         _ty_args: impl ExactSizeIterator<Item = impl TypeView>,
         args: impl ExactSizeIterator<Item = impl ValueView>,
     ) -> PartialVMResult<()> {
+        // TODO(Gas): https://github.com/aptos-labs/aptos-core/issues/5485
+        if self.should_leak_memory_for_native {
+            return Ok(());
+        }
+
         self.release_heap_memory(args.fold(AbstractValueSize::zero(), |acc, val| {
             acc + self
                 .gas_params
@@ -353,12 +375,19 @@ impl GasMeter for AptosGasMeter {
     #[inline]
     fn charge_call_generic(
         &mut self,
-        _module_id: &ModuleId,
+        module_id: &ModuleId,
         _func_name: &str,
         ty_args: impl ExactSizeIterator<Item = impl TypeView>,
         args: impl ExactSizeIterator<Item = impl ValueView>,
         num_locals: NumArgs,
     ) -> PartialVMResult<()> {
+        // Save the info for charge_native_function_before_execution.
+        self.should_leak_memory_for_native = (*module_id.address() == CORE_CODE_ADDRESS
+            && module_id.name().as_str() == "table")
+            || (self.feature_version >= 4
+                && *module_id.address() == CORE_CODE_ADDRESS
+                && module_id.name().as_str() == "event");
+
         let params = &self.gas_params.instr;
 
         let mut cost = params.call_generic_base
@@ -734,7 +763,7 @@ impl AptosGasMeter {
                 .storage_gas_params
                 .as_ref()
                 .unwrap()
-                .calculate_write_set_gas(ops),
+                .calculate_write_set_gas(ops, self.feature_version),
         };
         self.charge(cost).map_err(|e| e.finish(Location::Undefined))
     }

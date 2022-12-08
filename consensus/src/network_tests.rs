@@ -7,10 +7,7 @@ use crate::{
     test_utils::{self, consensus_runtime, placeholder_ledger_info, timed_block_on},
 };
 use aptos_config::network_id::NetworkId;
-use aptos_infallible::{Mutex, RwLock};
-use aptos_types::{block_info::BlockInfo, PeerId};
-use channel::{self, aptos_channel, message_queues::QueueStyle};
-use consensus_types::{
+use aptos_consensus_types::{
     block::{block_test_utils::certificate_for_genesis, Block},
     common::Author,
     proposal_msg::ProposalMsg,
@@ -19,6 +16,9 @@ use consensus_types::{
     vote_data::VoteData,
     vote_msg::VoteMsg,
 };
+use aptos_infallible::{Mutex, RwLock};
+use aptos_types::{block_info::BlockInfo, PeerId};
+use channel::{self, aptos_channel, message_queues::QueueStyle};
 use futures::{channel::mpsc, SinkExt, StreamExt};
 use network::{
     application::storage::PeerMetadataStorage,
@@ -482,13 +482,13 @@ mod tests {
     use super::*;
     use crate::network::NetworkTask;
     use aptos_config::network_id::NetworkId;
-    use aptos_crypto::HashValue;
-    use aptos_types::validator_verifier::random_validator_verifier;
-    use bytes::Bytes;
-    use consensus_types::{
+    use aptos_consensus_types::{
         block_retrieval::{BlockRetrievalRequest, BlockRetrievalResponse, BlockRetrievalStatus},
         common::Payload,
     };
+    use aptos_crypto::HashValue;
+    use aptos_types::validator_verifier::random_validator_verifier;
+    use bytes::Bytes;
     use futures::{channel::oneshot, future};
     use network::{
         application::storage::PeerMetadataStorage, protocols::direct_send::Message,
@@ -555,7 +555,7 @@ mod tests {
 
     #[test]
     fn test_network_api() {
-        let mut runtime = consensus_runtime();
+        let runtime = consensus_runtime();
         let num_nodes = 5;
         let mut receivers: Vec<NetworkReceivers> = Vec::new();
         let mut playground = NetworkPlayground::new(runtime.handle().clone());
@@ -618,7 +618,7 @@ mod tests {
         let previous_qc = certificate_for_genesis();
         let proposal = ProposalMsg::new(
             Block::new_proposal(
-                Payload::empty(),
+                Payload::empty(false),
                 1,
                 1,
                 previous_qc.clone(),
@@ -628,7 +628,7 @@ mod tests {
             .unwrap(),
             SyncInfo::new(previous_qc.clone(), previous_qc, None),
         );
-        timed_block_on(&mut runtime, async {
+        timed_block_on(&runtime, async {
             nodes[0]
                 .send_vote(vote_msg.clone(), peers[2..5].to_vec())
                 .await;
@@ -658,7 +658,7 @@ mod tests {
 
     #[test]
     fn test_rpc() {
-        let mut runtime = consensus_runtime();
+        let runtime = consensus_runtime();
         let num_nodes = 2;
         let mut senders = Vec::new();
         let mut receivers: Vec<NetworkReceivers> = Vec::new();
@@ -746,7 +746,7 @@ mod tests {
         };
         runtime.handle().spawn(on_request_block);
         let peer = peers[1];
-        timed_block_on(&mut runtime, async {
+        timed_block_on(&runtime, async {
             let response = nodes[0]
                 .request_block(
                     BlockRetrievalRequest::new(HashValue::zero(), 1),
@@ -817,7 +817,7 @@ mod tests {
         };
         let f_network_task = network_task.start();
 
-        let mut runtime = consensus_runtime();
-        timed_block_on(&mut runtime, future::join(f_network_task, f_check));
+        let runtime = consensus_runtime();
+        timed_block_on(&runtime, future::join(f_network_task, f_check));
     }
 }

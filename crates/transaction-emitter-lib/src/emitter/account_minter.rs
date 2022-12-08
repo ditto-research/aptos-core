@@ -93,7 +93,7 @@ impl<'t> AccountMinter<'t> {
             .checked_add(aptos_global_constants::MAX_GAS_AMOUNT * req.gas_price)
             .unwrap();
         info!(
-            "Account creationg plan created for {} accounts with {} balance each.",
+            "Account creation plan created for {} accounts with {} balance each.",
             num_accounts, coins_per_account
         );
         info!(
@@ -109,7 +109,19 @@ impl<'t> AccountMinter<'t> {
             self.mint_to_root(&req.rest_clients, coins_for_source)
                 .await?;
         } else {
-            if req.promt_before_spending {
+            let balance = &self
+                .pick_mint_client(&req.rest_clients)
+                .get_account_balance(self.source_account.address())
+                .await?
+                .into_inner();
+            info!(
+                "Source account {} current balance is {}, needed {} coins",
+                self.source_account.address(),
+                balance.get(),
+                coins_for_source
+            );
+
+            if req.prompt_before_spending {
                 if !prompt_yes(&format!(
                     "plan will consume in total {} balance, are you sure you want to proceed",
                     coins_for_source
@@ -128,17 +140,6 @@ impl<'t> AccountMinter<'t> {
                 );
             }
 
-            let balance = &self
-                .pick_mint_client(&req.rest_clients)
-                .get_account_balance(self.source_account.address())
-                .await?
-                .into_inner();
-            info!(
-                "Source account {} current balance is {}, needed {} coins",
-                self.source_account.address(),
-                balance.get(),
-                coins_for_source
-            );
             if balance.get() < coins_for_source {
                 return Err(anyhow!(
                     "Source ({}) doesn't have enough coins, balance {} < needed {}",
@@ -202,7 +203,7 @@ impl<'t> AccountMinter<'t> {
                 )
             });
 
-        // Each future creates 50 accounts, limit concurrency to 30.
+        // Each future creates 10 accounts, limit concurrency to 100.
         let stream = futures::stream::iter(account_futures).buffer_unordered(CREATION_PARALLELISM);
         // wait for all futures to complete
         let mut minted_accounts = stream
@@ -362,7 +363,7 @@ where
 
     // Wait for source account to exist, this can happen because the corresponding REST endpoint might
     // not be up to date with the latest ledger state and requires some time for syncing.
-    wait_for_single_account_sequence(&client, &source_account, Duration::from_secs(30)).await?;
+    wait_for_single_account_sequence(&client, &source_account, Duration::from_secs(60)).await?;
     while i < num_new_accounts {
         let batch_size = min(max_num_accounts_per_batch, num_new_accounts - i);
         let mut batch = if reuse_account {
@@ -459,11 +460,12 @@ pub async fn execute_and_wait_transactions(
     txns: Vec<SignedTransaction>,
     failure_counter: &AtomicUsize,
 ) -> Result<()> {
+    let start_seq_num = account.sequence_number();
     debug!(
         "[{:?}] Submitting transactions {} - {} for {}",
         client.path_prefix_string(),
-        account.sequence_number() - txns.len() as u64,
-        account.sequence_number(),
+        start_seq_num - txns.len() as u64,
+        start_seq_num,
         account.address()
     );
 
@@ -485,7 +487,17 @@ pub async fn execute_and_wait_transactions(
             (indices, txns)
         };
 
-        let results = client.submit_batch_bcs(&txns).await.unwrap().into_inner();
+        let response = client.submit_batch_bcs(&txns).await;
+        let results = match response {
+            Err(e) => {
+                warn!(
+                    "[{:?}] Submitting transactions connection refused: {:?}, num txns: {}, first txn: {:?}",
+                    client.path_prefix_string(), e, txns.len(), txns.first()
+                );
+                return Err(format_err!("{:?}", e));
+            }
+            Ok(result) => result.into_inner(),
+        };
         let mut failures = results
             .transaction_failures
             .into_iter()
@@ -556,7 +568,6 @@ pub async fn execute_and_wait_transactions(
         );
         failure_counter.fetch_add(local_failures, Ordering::Relaxed);
     }
-
     // Log error, but not return, because timeout or other errors can commit the transaction in the background,
     // and the wait for transaction below will fail if transaction is not there.
     if let Err(e) = result {
@@ -573,17 +584,39 @@ pub async fn execute_and_wait_transactions(
     let state = state.into_inner();
 
     for txn in state.txns.iter() {
-        RETRY_POLICY
-            .retry(move || {
-                client.wait_for_transaction_by_hash_bcs(
-                    txn.clone().committed_hash(),
-                    txn.expiration_timestamp_secs(),
-                    Some(Duration::from_secs(120)),
-                    None,
-                )
-            })
+        client
+            .wait_for_transaction_by_hash_bcs(
+                txn.clone().committed_hash(),
+                txn.expiration_timestamp_secs(),
+                Some(Duration::from_secs(120)),
+                None,
+            )
             .await
-            .map_err(|e| format_err!("Failed to wait for transactions: {:?}", e))?;
+            .map_err(|e| {
+                warn!(
+                    "Failed to wait for transactions: {:?}, txn: {:?}. [{:?}] We were submitting transactions for account {}: from {} - {}, now at {}",
+                    e,
+                    txn,
+                    client.path_prefix_string(),
+                    account.address(),
+                    start_seq_num - state.txns.len() as u64,
+                    start_seq_num,
+                    account.sequence_number()
+                );
+
+                // We shouldn't be able to reach this point.
+                // This failure is unrecoverable, we end the test at this point.
+                // It it sporadically happens in forge, and we need to debug why.
+                // By default, we end the test and stop the nodes, before the next
+                // counters poll happens after this.
+                // Wait for 30s here, to make sure Grafana counters for expired transactions, etc,
+                // get pulled from all the nodes, so we can investigate.
+                std::thread::sleep(Duration::from_secs(30));
+                format_err!(
+                    "Failed to wait for transactions: {:?}",
+                    e,
+                )
+            })?;
     }
 
     debug!(
@@ -595,4 +628,4 @@ pub async fn execute_and_wait_transactions(
     Ok(())
 }
 
-const CREATION_PARALLELISM: usize = 200;
+const CREATION_PARALLELISM: usize = 100;

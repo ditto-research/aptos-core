@@ -330,6 +330,10 @@ pub struct TransactionInfo {
     #[oai(skip)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub block_height: Option<U64>,
+    /// Epoch of the transaction belongs in, this field will not be present through the API
+    #[oai(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<U64>,
 }
 
 /// A transaction waiting in mempool
@@ -840,15 +844,17 @@ pub struct Ed25519Signature {
 
 impl VerifyInput for Ed25519Signature {
     fn verify(&self) -> anyhow::Result<()> {
-        if self.public_key.inner().len() != ED25519_PUBLIC_KEY_LENGTH {
+        let public_key_len = self.public_key.inner().len();
+        let signature_len = self.signature.inner().len();
+        if public_key_len != ED25519_PUBLIC_KEY_LENGTH {
             bail!(
-                "Ed25519 signature's public key is an invalid number of bytes, should be {} bytes",
-                ED25519_PUBLIC_KEY_LENGTH
+                "Ed25519 signature's public key is an invalid number of bytes, should be {} bytes but found {}",
+                ED25519_PUBLIC_KEY_LENGTH, public_key_len
             )
-        } else if self.signature.inner().len() != ED25519_SIGNATURE_LENGTH {
+        } else if signature_len != ED25519_SIGNATURE_LENGTH {
             bail!(
-                "Ed25519 signature length is an invalid number of bytes, should be {} bytes",
-                ED25519_SIGNATURE_LENGTH
+                "Ed25519 signature length is an invalid number of bytes, should be {} bytes but found {}",
+                ED25519_SIGNATURE_LENGTH, signature_len
             )
         } else {
             // TODO: Check if they match / parse correctly?
@@ -1257,7 +1263,18 @@ impl TransactionSigningMessage {
 
 /// Struct holding the outputs of the estimate gas API
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
-pub struct GasEstimation {
+pub struct GasEstimationBcs {
     /// The current estimate for the gas unit price
     pub gas_estimate: u64,
+}
+
+/// Struct holding the outputs of the estimate gas API
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Object)]
+pub struct GasEstimation {
+    /// The deprioritized estimate for the gas unit price
+    pub deprioritized_gas_estimate: Option<u64>,
+    /// The current estimate for the gas unit price
+    pub gas_estimate: u64,
+    /// The prioritized estimate for the gas unit price
+    pub prioritized_gas_estimate: Option<u64>,
 }

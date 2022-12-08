@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
-    adapter_common,
     adapter_common::{
         discard_error_output, discard_error_vm_status, validate_signature_checked_transaction,
         validate_signed_transaction, PreprocessedTransaction, VMAdapter,
     },
     aptos_vm_impl::{get_transaction_output, AptosVMImpl, AptosVMInternals},
+    block_executor::BlockAptosVM,
     counters::*,
-    data_cache::{AsMoveResolver, IntoMoveResolver, StateViewCache},
+    data_cache::{AsMoveResolver, IntoMoveResolver},
     delta_state_view::DeltaStateView,
     errors::expect_only_successful_execution,
     logging::AdapterLogSchema,
@@ -73,6 +73,7 @@ use std::{
 static EXECUTION_CONCURRENCY_LEVEL: OnceCell<usize> = OnceCell::new();
 static NUM_PROOF_READING_THREADS: OnceCell<usize> = OnceCell::new();
 static RUNTIME_CHECKS: OnceCell<RuntimeConfig> = OnceCell::new();
+static PROCESSED_TRANSACTIONS_DETAILED_COUNTERS: OnceCell<bool> = OnceCell::new();
 
 /// Remove this once the bundle is removed from the code.
 static MODULE_BUNDLE_DISALLOWED: AtomicBool = AtomicBool::new(true);
@@ -154,6 +155,20 @@ impl AptosVM {
         }
     }
 
+    /// Sets addigional details in counters when invoked the first time.
+    pub fn set_processed_transactions_detailed_counters() {
+        // Only the first call succeeds, due to OnceCell semantics.
+        PROCESSED_TRANSACTIONS_DETAILED_COUNTERS.set(true).ok();
+    }
+
+    /// Get whether we should capture additional details in counters
+    pub fn get_processed_transactions_detailed_counters() -> bool {
+        match PROCESSED_TRANSACTIONS_DETAILED_COUNTERS.get() {
+            Some(value) => *value,
+            None => false,
+        }
+    }
+
     pub fn internals(&self) -> AptosVMInternals {
         AptosVMInternals::new(&self.0)
     }
@@ -229,9 +244,15 @@ impl AptosVM {
                 ) {
                     return discard_error_vm_status(e);
                 }
-                let txn_output =
-                    get_transaction_output(&mut (), session, gas_meter.balance(), txn_data, status)
-                        .unwrap_or_else(|e| discard_error_vm_status(e).1);
+                let txn_output = get_transaction_output(
+                    &mut (),
+                    session,
+                    gas_meter.balance(),
+                    txn_data,
+                    status,
+                    gas_meter.feature_version(),
+                )
+                .unwrap_or_else(|e| discard_error_vm_status(e).1);
                 (error_code, txn_output)
             }
             TransactionStatus::Discard(status) => {
@@ -280,7 +301,7 @@ impl AptosVM {
         let epilogue_change_set_ext = session
             .finish()
             .map_err(|e| e.into_vm_status())?
-            .into_change_set(&mut ())?;
+            .into_change_set(&mut (), gas_meter.feature_version())?;
         let change_set_ext = user_txn_change_set_ext
             .squash(epilogue_change_set_ext)
             .map_err(|_err| VMStatus::Error(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR))?;
@@ -379,7 +400,8 @@ impl AptosVM {
             self.resolve_pending_code_publish(&mut session, gas_meter)?;
 
             let session_output = session.finish().map_err(|e| e.into_vm_status())?;
-            let change_set_ext = session_output.into_change_set(&mut ())?;
+            let change_set_ext =
+                session_output.into_change_set(&mut (), gas_meter.feature_version())?;
 
             // Charge gas for write set
             gas_meter.charge_write_set_gas(change_set_ext.write_set().iter())?;
@@ -519,7 +541,8 @@ impl AptosVM {
         )?;
 
         let session_output = session.finish().map_err(|e| e.into_vm_status())?;
-        let change_set_ext = session_output.into_change_set(&mut ())?;
+        let change_set_ext =
+            session_output.into_change_set(&mut (), gas_meter.feature_version())?;
 
         // Charge gas for write set
         gas_meter.charge_write_set_gas(change_set_ext.write_set().iter())?;
@@ -727,9 +750,11 @@ impl AptosVM {
         let mut gas_meter = UnmeteredGasMeter;
 
         Ok(match writeset_payload {
-            WriteSetPayload::Direct(change_set) => {
-                ChangeSetExt::new(DeltaChangeSet::empty(), change_set.clone())
-            }
+            WriteSetPayload::Direct(change_set) => ChangeSetExt::new(
+                DeltaChangeSet::empty(),
+                change_set.clone(),
+                self.0.get_gas_feature_version(),
+            ),
             WriteSetPayload::Script { script, execute_as } => {
                 let mut tmp_session = self.0.new_session(storage, session_id);
                 let senders = match txn_sender {
@@ -759,7 +784,9 @@ impl AptosVM {
                     .map_err(|e| e.into_vm_status());
 
                 match execution_result {
-                    Ok(session_out) => session_out.into_change_set(&mut ()).map_err(Err)?,
+                    Ok(session_out) => session_out
+                        .into_change_set(&mut (), self.0.get_gas_feature_version())
+                        .map_err(Err)?,
                     Err(e) => {
                         return Err(Ok((e, discard_error_output(StatusCode::INVALID_WRITE_SET))));
                     }
@@ -880,23 +907,9 @@ impl AptosVM {
             0.into(),
             &txn_data,
             ExecutionStatus::Success,
+            self.0.get_gas_feature_version(),
         )?;
         Ok((VMStatus::Executed, output))
-    }
-
-    /// Alternate form of 'execute_block' that keeps the vm_status before it goes into the
-    /// `TransactionOutput`
-    pub fn execute_block_and_keep_vm_status(
-        transactions: Vec<Transaction>,
-        state_view: &impl StateView,
-    ) -> Result<Vec<(VMStatus, TransactionOutput)>, VMStatus> {
-        let mut state_view_cache = StateViewCache::new(state_view);
-        let count = transactions.len();
-        let vm = AptosVM::new(&state_view_cache);
-        let res = adapter_common::execute_block_impl(&vm, transactions, &mut state_view_cache)?;
-        // Record the histogram count for transactions per block.
-        BLOCK_TRANSACTION_COUNT.observe(count as f64);
-        Ok(res)
     }
 
     pub fn simulate_signed_transaction(
@@ -955,22 +968,21 @@ impl VMExecutor for AptosVM {
             ))
         });
 
-        let concurrency_level = Self::get_concurrency_level();
-        if concurrency_level > 1 {
-            let (result, err) = crate::parallel_executor::ParallelAptosVM::execute_block(
-                transactions,
-                state_view,
-                concurrency_level,
-            )?;
-            debug!("Parallel execution error {:?}", err);
-            Ok(result)
-        } else {
-            let output = Self::execute_block_and_keep_vm_status(transactions, state_view)?;
-            Ok(output
-                .into_iter()
-                .map(|(_vm_status, txn_output)| txn_output)
-                .collect())
+        let log_context = AdapterLogSchema::new(state_view.id(), 0);
+        info!(
+            log_context,
+            "Executing block, transaction count: {}",
+            transactions.len()
+        );
+
+        let count = transactions.len();
+        let ret =
+            BlockAptosVM::execute_block(transactions, state_view, Self::get_concurrency_level());
+        if ret.is_ok() {
+            // Record the histogram count for transactions per block.
+            BLOCK_TRANSACTION_COUNT.observe(count as f64);
         }
+        ret
     }
 }
 
@@ -1065,6 +1077,7 @@ impl VMAdapter for AptosVM {
                 (vm_status, output, Some("waypoint_write_set".to_string()))
             }
             PreprocessedTransaction::UserTransaction(txn) => {
+                fail_point!("aptos_vm::execution::user_transaction");
                 let sender = txn.sender().to_string();
                 let _timer = TXN_TOTAL_SECONDS.start_timer();
                 let (vm_status, output) =

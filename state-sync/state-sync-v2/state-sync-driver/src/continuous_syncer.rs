@@ -10,17 +10,17 @@ use crate::{
     utils::{SpeculativeStreamState, PENDING_DATA_LOG_FREQ_SECS},
 };
 use aptos_config::config::ContinuousSyncingMode;
+use aptos_data_streaming_service::streaming_client::NotificationAndFeedback;
+use aptos_data_streaming_service::{
+    data_notification::{DataNotification, DataPayload, NotificationId},
+    data_stream::DataStreamListener,
+    streaming_client::{DataStreamingClient, Epoch, NotificationFeedback},
+};
 use aptos_infallible::Mutex;
 use aptos_logger::{prelude::*, sample, sample::SampleRate};
 use aptos_types::{
     ledger_info::LedgerInfoWithSignatures,
     transaction::{TransactionListWithProof, TransactionOutputListWithProof, Version},
-};
-use data_streaming_service::streaming_client::NotificationAndFeedback;
-use data_streaming_service::{
-    data_notification::{DataNotification, DataPayload, NotificationId},
-    data_stream::DataStreamListener,
-    streaming_client::{DataStreamingClient, Epoch, NotificationFeedback},
 };
 use std::{sync::Arc, time::Duration};
 use storage_interface::DbReader;
@@ -146,9 +146,13 @@ impl<
     /// Attempts to fetch a data notification from the active stream
     async fn fetch_next_data_notification(&mut self) -> Result<DataNotification, Error> {
         let max_stream_wait_time_ms = self.driver_configuration.config.max_stream_wait_time_ms;
-        let result =
-            utils::get_data_notification(max_stream_wait_time_ms, self.active_data_stream.as_mut())
-                .await;
+        let max_num_stream_timeouts = self.driver_configuration.config.max_num_stream_timeouts;
+        let result = utils::get_data_notification(
+            max_stream_wait_time_ms,
+            max_num_stream_timeouts,
+            self.active_data_stream.as_mut(),
+        )
+        .await;
         if matches!(result, Err(Error::CriticalDataStreamTimeout(_))) {
             // If the stream has timed out too many times, we need to reset it
             warn!("Resetting the currently active data stream due to too many timeouts!");

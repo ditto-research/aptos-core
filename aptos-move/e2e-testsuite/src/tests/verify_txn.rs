@@ -1,6 +1,7 @@
 // Copyright (c) Aptos
 // SPDX-License-Identifier: Apache-2.0
 
+use aptos_cached_packages::aptos_stdlib;
 use aptos_crypto::{ed25519::Ed25519PrivateKey, PrivateKey, Uniform};
 use aptos_gas::{InitialGasSchedule, TransactionGasParameters};
 use aptos_types::{
@@ -11,20 +12,17 @@ use aptos_types::{
     transaction::{ExecutionStatus, Script, TransactionArgument, TransactionStatus},
     vm_status::StatusCode,
 };
-use cached_packages::aptos_stdlib;
 use language_e2e_tests::{
     assert_prologue_disparity, assert_prologue_parity, common_transactions::EMPTY_SCRIPT,
     compile::compile_module, current_function_name, executor::FakeExecutor, transaction_status_eq,
 };
-use move_deps::{
-    move_binary_format::file_format::CompiledModule,
-    move_core_types::{
-        identifier::Identifier,
-        language_storage::{StructTag, TypeTag},
-        vm_status::StatusCode::MODULE_ADDRESS_DOES_NOT_MATCH_SENDER,
-    },
-    move_ir_compiler::Compiler,
+use move_binary_format::file_format::CompiledModule;
+use move_core_types::{
+    identifier::Identifier,
+    language_storage::{StructTag, TypeTag},
+    vm_status::StatusCode::MODULE_ADDRESS_DOES_NOT_MATCH_SENDER,
 };
+use move_ir_compiler::Compiler;
 
 pub const MAX_TRANSACTION_SIZE_IN_BYTES: u64 = 6 * 1024 * 1024;
 
@@ -674,7 +672,7 @@ fn good_module_uses_bad(
         address,
     );
 
-    let framework_modules = cached_packages::head_release_bundle().compiled_modules();
+    let framework_modules = aptos_cached_packages::head_release_bundle().compiled_modules();
     let compiler = Compiler {
         deps: framework_modules
             .iter()

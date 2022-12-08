@@ -42,7 +42,6 @@ module aptos_framework::vesting {
     use std::string::{utf8, String};
     use std::vector;
 
-    use aptos_std::event::{EventHandle, emit_event};
     use aptos_std::pool_u64::{Self, Pool};
     use aptos_std::simple_map::{Self, SimpleMap};
 
@@ -50,6 +49,7 @@ module aptos_framework::vesting {
     use aptos_framework::aptos_account::assert_account_is_registered_for_apt;
     use aptos_framework::aptos_coin::AptosCoin;
     use aptos_framework::coin::{Self, Coin};
+    use aptos_framework::event::{EventHandle, emit_event};
     use aptos_framework::stake;
     use aptos_framework::staking_contract;
     use aptos_framework::system_addresses;
@@ -951,7 +951,8 @@ module aptos_framework::vesting {
         stake::assert_stake_pool(stake_pool_address, GRANT_AMOUNT, 0, 0, 0);
 
         // The stake pool is still in pending active stake, so unlock_rewards and vest shouldn't do anything.
-        stake::join_validator_set_for_test(admin, stake_pool_address, false);
+        let (_sk, pk, pop) = stake::generate_identity();
+        stake::join_validator_set_for_test(&pk, &pop, admin, stake_pool_address, false);
         assert!(stake::get_validator_state(stake_pool_address) == VALIDATOR_STATUS_PENDING_ACTIVE, 1);
         unlock_rewards(contract_address);
         vest(contract_address);
@@ -1156,7 +1157,8 @@ module aptos_framework::vesting {
 
         // Operator needs to join the validator set for the stake pool to earn rewards.
         let stake_pool_address = stake_pool_address(contract_address);
-        stake::join_validator_set_for_test(admin, stake_pool_address, true);
+        let (_sk, pk, pop) = stake::generate_identity();
+        stake::join_validator_set_for_test(&pk, &pop, admin, stake_pool_address, true);
 
         // Fast forward to the end of the first period. vest() should now unlock 3/48 of the tokens.
         timestamp::update_global_time_for_test_secs(vesting_start_secs(contract_address) + VESTING_PERIOD);
@@ -1186,7 +1188,8 @@ module aptos_framework::vesting {
 
         // Operator needs to join the validator set for the stake pool to earn rewards.
         let stake_pool_address = stake_pool_address(contract_address);
-        stake::join_validator_set_for_test(admin, stake_pool_address, true);
+        let (_sk, pk, pop) = stake::generate_identity();
+        stake::join_validator_set_for_test(&pk, &pop, admin, stake_pool_address, true);
 
         // Stake pool earns some rewards. unlock_rewards should unlock the right amount.
         stake::end_epoch();
@@ -1221,7 +1224,8 @@ module aptos_framework::vesting {
 
         // Operator needs to join the validator set for the stake pool to earn rewards.
         let stake_pool_address = stake_pool_address(contract_address);
-        stake::join_validator_set_for_test(operator, stake_pool_address, true);
+        let (_sk, pk, pop) = stake::generate_identity();
+        stake::join_validator_set_for_test(&pk, &pop, operator, stake_pool_address, true);
 
         // Stake pool earns some rewards. unlock_rewards should unlock the right amount.
         stake::end_epoch();

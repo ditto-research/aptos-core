@@ -1,10 +1,13 @@
 // Copyright (c) Aptos
 // SPDX-License-Identifier: Apache-2.0
 
+// README: The aptos-faucet is deprecated in favor of the tap. Do not add new code
+// to this until you've spoken with the Ecosystem Platform team + dport.
+
 use crate::Service;
 use anyhow::Result;
 use aptos_crypto::{ed25519::Ed25519PublicKey, hash::HashValue};
-use aptos_logger::{error, info, warn};
+use aptos_logger::{info, warn};
 use aptos_sdk::types::{
     account_address::AccountAddress,
     transaction::{
@@ -171,7 +174,7 @@ pub async fn process(service: &Service, params: MintParams) -> Result<Response> 
 
     // After 30 seconds, we still have not caught up, we are likely unhealthy
     if our_faucet_seq >= faucet_seq + 50 {
-        error!("We are unhealthy, transactions have likely expired.");
+        warn!("We are unhealthy, transactions have likely expired.");
         let mut faucet_account = service.faucet_account.lock().await;
         if faucet_account.sequence_number() >= faucet_seq + 50 {
             info!("Resetting the sequence number counter.");

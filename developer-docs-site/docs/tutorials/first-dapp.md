@@ -5,15 +5,15 @@ slug: "your-first-dapp"
 
 # Your First Dapp
 
-In this tutorial, you will learn how to build a [dapp](https://en.wikipedia.org/wiki/Decentralized_application) on the Aptos blockchain. A dapp usually consists of a user interface written in JavaScript, which  interacts with one or more Move modules.
+In this tutorial, you will learn how to build a [dapp](https://en.wikipedia.org/wiki/Decentralized_application) on the Aptos blockchain. A dapp usually consists of a graphical user interface, which interacts with one or more Move modules.
 
-For this tutorial, we will use the Move module `HelloBlockchain` described in [Your First Move Module](first-move-module.md) and focus on building the user interface.
+For this tutorial, we will use the Move module [`HelloBlockchain`](https://github.com/aptos-labs/aptos-core/tree/main/aptos-move/move-examples/hello_blockchain) described in [Your First Move Module](first-move-module.md) and focus on building the user interface.
 
-We will use:
+We will use the:
 
-- The [Aptos Typescript SDK][ts_sdk].
-- The [Aptos Wallet][building_wallet], and
-- The [Aptos CLI][install_cli] to interact with the Aptos blockchain.
+* [TypeScript SDK](../sdks/ts-sdk/index.md)
+* [Petra Wallet](../guides/install-petra-wallet-extension)
+* [Aptos CLI](../cli-tools/aptos-cli-tool/use-aptos-cli.md)
 
 The end result is a dapp that lets users publish and share snippets of text on the Aptos blockchain.
 
@@ -26,36 +26,66 @@ The full source code for this tutorial is being updated. Meanwhile, the older on
 
 ### Aptos Wallet
 
-Before starting this tutorial, install the [Aptos Wallet extension](../guides/building-wallet-extension.md).
+Before starting this tutorial, install the [Petra extension](../guides/install-petra-wallet-extension).
 
 After you install it:
 
 1. Open the Wallet and click **Create a new wallet**. Then click **Create account** to create an Aptos Account.
 2. Copy the private key. You will need it to set up the Aptos CLI in the next section.
+3. See the [user instructions](https://petra.app/docs/use) on petra.app for help.
 
 :::tip
-Ensure that your account has sufficient funds to perform transactions by clicking the **Faucet** button.
+Ensure your account has sufficient funds to perform transactions by clicking the **Faucet** button.
 :::
 
 ### Aptos CLI
 
-1. Install the [Aptos CLI][install_cli].
+1. Install the [Aptos CLI](../cli-tools/aptos-cli-tool/install-aptos-cli.md).
 
-2. Run `aptos init`, and when it asks for your private key, paste the private key from the Aptos Wallet that you copied earlier. This will initialize the Aptos CLI to use the same account as used by the Aptos Wallet.
+2. Run `aptos init`.
 
-3. Run `aptos account list` to verify that it is working.
+3. Select your network as you did in the [Move module](first-move-module.md#step-2-create-an-account-and-fund-it) tutorial.
+
+4. When prompted for your private key, paste the private key from the Aptos Wallet that you copied earlier and press **Return**.
+
+You will see output resembling:
+
+```text
+Account <account-number> has been already found onchain
+
+---
+Aptos CLI is now set up for account <account-number> as profile default!  Run `aptos --help` for more information about commands
+{
+  "Result": "Success"
+}
+```
+This initializes the Aptos CLI to use the same account as used by the Aptos Wallet.
+
+3. Run `aptos account list` to verify that it is working. You should see your account address listed in the `addr` field for all events.
 
 ## Step 1: Set up a single page app
 
 We will now set up the frontend user interface for our dapp. We will use [`create-react-app`](https://create-react-app.dev/) to set up the app in this tutorial, but neither React nor `create-react-app` are required. You can use your preferred JavaScript framework.
 
+First run:
+
 ```bash
 npx create-react-app first-dapp --template typescript
+```
+
+Accept installation of the `create-react-app` package if prompted. Then navigate to the newly created `first-dapp` directory:
+
+```bash
 cd first-dapp
+```
+
+And start the app with:
+
+```bash
 npm start
 ```
 
-You will now have a basic React app running in your browser.
+You will now have a basic React app running in your browser at: http://localhost:3000/
 
 ## Step 2: Integrate the Aptos Wallet Web3 API
 
@@ -67,7 +97,9 @@ Next we will update our app to use this API to display the Wallet account's addr
 
 The first step when integrating with the `window.aptos` API is to delay rendering the application until the `window.onload` event has fired.
 
-Open up `src/index.tsx` and change the following code snippet:
+Quit the app by hitting Ctrl-C in the terminal running the `npm start` process.
+
+Still in the `first-dapp` directory, open the `src/index.tsx` file and change the following code snippet:
 
 ```typescript
 root.render(
@@ -89,7 +121,9 @@ window.addEventListener('load', () => {
 });
 ```
 
-This change will ensure that the `window.aptos` API has been initialized by the time we render the app (if we render too early, the Wallet extension may not have had a chance to initialize the API yet and thus `window.aptos` will be `undefined`).
+This change will ensure that the `window.aptos` API has been initialized by the time we render the app. If we render too early, the Wallet extension may not have had a chance to initialize the API yet and thus `window.aptos` will be `undefined`.
+
+To see the change, once again run: `npm start`
 
 ### (Optional) TypeScript setup for `window.aptos`
 
@@ -105,7 +139,7 @@ This lets us use the `window.aptos` API without having to do `(window as any).ap
 
 ### Display `window.aptos.account()` in the app
 
-Our app is now ready to use the `window.aptos` API. We will change `src/App.tsx` to retrieve the value of `window.aptos.account()` (the wallet account) on initial render, store it in state, and then display it:
+Our app is now ready to use the `window.aptos` API. We will change `src/App.tsx` to retrieve the value of `window.aptos.account()` (the wallet account) on initial render, store it in state, and then display it by replacing the contents in the file with:
 
 ```typescript
 import React from 'react';
@@ -114,8 +148,18 @@ import './App.css';
 function App() {
   // Retrieve aptos.account on initial render and store it.
   const [address, setAddress] = React.useState<string | null>(null);
+  
+  /**
+   * init function
+   */
+  const init = async() => {
+    // connect
+    const { address, publicKey } = await window.aptos.connect();
+    setAddress(address);
+  }
+  
   React.useEffect(() => {
-    window.aptos.account().then((data : {address: string}) => setAddress(data.address));
+     init();
   }, []);
 
   return (
@@ -160,7 +204,7 @@ First, add the SDK to the project's dependencies:
 npm install --save aptos
 ```
 
-You will now see `"aptos": "^0.0.20"` (or similar) in your `package.json`.
+You will now see `"aptos": "^1.3.15"` (or similar) in your `package.json`.
 
 ### Create an `AptosClient`
 
@@ -240,7 +284,7 @@ You can also verify that the module was published by going to the [Aptos Explore
 ```json
 {
   "address": "0x5af503b5c379bd69f46184304975e1ef1fa57f422dd193cdad67dc139d532481",
-  "name": "Message",
+  "name": "message",
   "friends": [],
   "exposedFunctions": [
     {
@@ -307,11 +351,11 @@ You can also verify that the module was published by going to the [Aptos Explore
 }
 ```
 
-Make a note of `"name": "Message"`, we will use it in the next section.
+Make a note of `"name": "message"`, we will use it in the next section.
 
 ### Add module publishing instructions to the dapp
 
-As a convenience to the users, we can have the app display the `aptos move publish` command if the module does not exist. To do so, we will use the Aptos SDK to retrieve the account modules and look for one where `module.abi.name` equals `"Message"` (i.e., the `"name": "Message"` we saw in the Aptos Explorer).
+As a convenience to the users, we can have the app display the `aptos move publish` command if the module does not exist. To do so, we will use the Aptos SDK to retrieve the account modules and look for one where `module.abi.name` equals `"message"` (i.e., the `"name": "message"` we saw in the Aptos Explorer).
 
 Update `src/App.tsx`:
 
@@ -320,13 +364,13 @@ function App() {
   // ...
 
   // Check for the module; show publish instructions if not present.
-  const [modules, setModules] = React.useState<Types.MoveModule[]>([]);
+  const [modules, setModules] = React.useState<Types.MoveModuleBytecode[]>([]);
   React.useEffect(() => {
     if (!address) return;
     client.getAccountModules(address).then(setModules);
   }, [address]);
 
-  const hasModule = modules.some((m) => m.abi?.name === 'Message');
+  const hasModule = modules.some((m) => m.abi?.name === 'message');
   const publishInstructions = (
     <pre>
       Run this command to publish the module:
@@ -481,7 +525,7 @@ function App() {
   // ...
 
   // Get the message from account resources.
-  const [resources, setResources] = React.useState<Types.AccountResource[]>([]);
+  const [resources, setResources] = React.useState<Types.MoveResource[]>([]);
   React.useEffect(() => {
     if (!address) return;
     client.getAccountResources(address).then(setResources);
@@ -550,6 +594,8 @@ function App() {
 
 That concludes this tutorial.
 
-[building_wallet]: /guides/building-wallet-extension
-[install_cli]: /cli-tools/aptos-cli-tool/install-aptos-cli
-[ts_sdk]: /sdks/ts-sdk/index
+## Supporting documentation
+
+* [Aptos CLI](../cli-tools/aptos-cli-tool/use-aptos-cli.md)
+* [TypeScript SDK](../sdks/ts-sdk/index.md)
+* [Wallet Standard](../guides/wallet-standard.md)

@@ -2,10 +2,10 @@
 /// to synchronize configuration changes for the validators.
 module aptos_framework::reconfiguration {
     use std::error;
-    use aptos_std::event;
     use std::signer;
 
     use aptos_framework::account;
+    use aptos_framework::event;
     use aptos_framework::stake;
     use aptos_framework::system_addresses;
     use aptos_framework::timestamp;
@@ -15,7 +15,6 @@ module aptos_framework::reconfiguration {
     friend aptos_framework::aptos_governance;
     friend aptos_framework::block;
     friend aptos_framework::consensus_config;
-    friend aptos_framework::features;
     friend aptos_framework::gas_schedule;
     friend aptos_framework::genesis;
     friend aptos_framework::version;

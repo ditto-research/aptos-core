@@ -1,6 +1,7 @@
 // Copyright (c) Aptos
 // SPDX-License-Identifier: Apache-2.0
 
+use aptos_cached_packages::aptos_stdlib;
 use aptos_crypto::ed25519::Ed25519Signature;
 use aptos_gas::{AptosGasParameters, FromOnChainGasSchedule};
 use aptos_rest_client::aptos_api_types::{MoveModuleId, TransactionData};
@@ -10,7 +11,6 @@ use aptos_types::account_config::{AccountResource, CORE_CODE_ADDRESS};
 use aptos_types::on_chain_config::GasScheduleV2;
 use aptos_types::transaction::authenticator::AuthenticationKey;
 use aptos_types::transaction::{SignedTransaction, Transaction};
-use cached_packages::aptos_stdlib;
 use forge::Swarm;
 use std::convert::TryFrom;
 use std::str::FromStr;
@@ -37,8 +37,8 @@ async fn test_basic_client() {
     //            test to pass.
     //            Is this caused by us increasing the default max gas amount in
     //            testsuite/forge/src/interface/aptos.rs?
-    let mut account1 = info.create_and_fund_user_account(100_000).await.unwrap();
-    let account2 = info.create_and_fund_user_account(100_000).await.unwrap();
+    let mut account1 = info.create_and_fund_user_account(10_000_000).await.unwrap();
+    let account2 = info.create_and_fund_user_account(10_000_000).await.unwrap();
 
     let tx = account1.sign_with_transaction_builder(
         info.transaction_factory()
@@ -94,11 +94,11 @@ async fn test_gas_estimation() {
         "No transactions should equate to lowest gas price"
     );
     let account1 = public_info
-        .create_and_fund_user_account(1000000)
+        .create_and_fund_user_account(100_000_000)
         .await
         .expect("Should create account");
     let account2 = public_info
-        .create_and_fund_user_account(1000000)
+        .create_and_fund_user_account(100_000_000)
         .await
         .expect("Should create account");
 
@@ -189,10 +189,16 @@ async fn test_bcs() {
     let mut info = swarm.aptos_public_info();
 
     // Create accounts
-    let mut local_account = info.create_and_fund_user_account(10000000).await.unwrap();
+    let mut local_account = info
+        .create_and_fund_user_account(100_000_000)
+        .await
+        .unwrap();
     let account = local_account.address();
     let public_key = local_account.public_key();
-    let other_local_account = info.create_and_fund_user_account(10000000).await.unwrap();
+    let other_local_account = info
+        .create_and_fund_user_account(100_000_000)
+        .await
+        .unwrap();
 
     let client = info.client();
     // Check get account

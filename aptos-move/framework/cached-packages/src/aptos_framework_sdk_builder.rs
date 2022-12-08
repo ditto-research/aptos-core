@@ -37,12 +37,12 @@ pub enum EntryFunctionCall {
     /// Offers signer capability on behalf of `account` to the account at address `recipient_address`.
     /// An account can delegate its signer capability to only one other address at one time.
     /// `signer_capability_key_bytes` is the `SignerCapabilityOfferProofChallengeV2` signed by the account owner's key
-    /// `account_scheme` is the scheme of the account (ed25519 or multi_ed25519)
-    /// `account_public_key_bytes` is the public key of the account owner
+    /// `account_scheme` is the scheme of the account (ed25519 or multi_ed25519).
+    /// `account_public_key_bytes` is the public key of the account owner.
     /// `recipient_address` is the address of the recipient of the signer capability - note that if there's an existing
     /// `recipient_address` in the account owner's `SignerCapabilityOffer`, this will replace the
     /// previous `recipient_address` upon successful verification (the previous recipient will no longer have access
-    /// to the account owner's signer capability)
+    /// to the account owner's signer capability).
     AccountOfferSignerCapability {
         signer_capability_sig_bytes: Vec<u8>,
         account_scheme: u8,
@@ -50,17 +50,23 @@ pub enum EntryFunctionCall {
         recipient_address: AccountAddress,
     },
 
+    /// Revoke the account owner's signer capability offer for `to_be_revoked_address` (i.e., the address that
+    /// has a signer capability offer from `account` but will be revoked in this function).
     AccountRevokeSignerCapability {
         to_be_revoked_address: AccountAddress,
     },
 
     /// Generic authentication key rotation function that allows the user to rotate their authentication key from any scheme to any scheme.
-    /// To authorize the rotation, a signature by the current private key on a valid RotationProofChallenge (`cap_rotate_key`)
-    /// demonstrates that the user intends to and has the capability to rotate the authentication key. A signature by the new
-    /// private key on a valid RotationProofChallenge (`cap_update_table`) verifies that the user has the capability to update the
-    /// value at key `auth_key` on the `OriginatingAddress` table. `from_scheme` refers to the scheme of the `from_public_key` and
-    /// `to_scheme` refers to the scheme of the `to_public_key`. A scheme of 0 refers to an Ed25519 key and a scheme of 1 refers to
-    /// Multi-Ed25519 keys.
+    /// To authorize the rotation, we need two signatures:
+    /// - the first signature `cap_rotate_key` refers to the signature by the account owner's current key on a valid `RotationProofChallenge`,
+    /// demonstrating that the user intends to and has the capability to rotate the authentication key of this account;
+    /// - the second signature `cap_update_table` refers to the signature by the new key (that the account owner wants to rotate to) on a
+    /// valid `RotationProofChallenge`, demonstrating that the user owns the new private key, and has the authority to update the
+    /// `OriginatingAddress` map with the new address mapping <new_address, originating_address>.
+    /// To verify signatures, we need their corresponding public key and public key scheme: we use `from_scheme` and `from_public_key_bytes`
+    /// to verify `cap_rotate_key`, and `to_scheme` and `to_public_key_bytes` to verify `cap_update_table`.
+    /// A scheme of 0 refers to an Ed25519 key and a scheme of 1 refers to Multi-Ed25519 keys.
+    /// `originating address` refers to an account's original/first address.
     AccountRotateAuthenticationKey {
         from_scheme: u8,
         from_public_key_bytes: Vec<u8>,
@@ -101,7 +107,7 @@ pub enum EntryFunctionCall {
         proposal_id: u64,
     },
 
-    /// Create a proposal with the backing `stake_pool`.
+    /// Create a single-step proposal with the backing `stake_pool`.
     /// @param execution_hash Required. This is the hash of the resolution script. When the proposal is resolved,
     /// only the exact script with matching hash can be successfully executed.
     AptosGovernanceCreateProposal {
@@ -109,6 +115,17 @@ pub enum EntryFunctionCall {
         execution_hash: Vec<u8>,
         metadata_location: Vec<u8>,
         metadata_hash: Vec<u8>,
+    },
+
+    /// Create a single-step or multi-step proposal with the backing `stake_pool`.
+    /// @param execution_hash Required. This is the hash of the resolution script. When the proposal is resolved,
+    /// only the exact script with matching hash can be successfully executed.
+    AptosGovernanceCreateProposalV2 {
+        stake_pool: AccountAddress,
+        execution_hash: Vec<u8>,
+        metadata_location: Vec<u8>,
+        metadata_hash: Vec<u8>,
+        is_multi_step_proposal: bool,
     },
 
     /// Vote on proposal with `proposal_id` and voting power from `stake_pool`.
@@ -509,6 +526,19 @@ impl EntryFunctionCall {
                 metadata_location,
                 metadata_hash,
             ),
+            AptosGovernanceCreateProposalV2 {
+                stake_pool,
+                execution_hash,
+                metadata_location,
+                metadata_hash,
+                is_multi_step_proposal,
+            } => aptos_governance_create_proposal_v2(
+                stake_pool,
+                execution_hash,
+                metadata_location,
+                metadata_hash,
+                is_multi_step_proposal,
+            ),
             AptosGovernanceVote {
                 stake_pool,
                 proposal_id,
@@ -738,12 +768,12 @@ impl EntryFunctionCall {
 /// Offers signer capability on behalf of `account` to the account at address `recipient_address`.
 /// An account can delegate its signer capability to only one other address at one time.
 /// `signer_capability_key_bytes` is the `SignerCapabilityOfferProofChallengeV2` signed by the account owner's key
-/// `account_scheme` is the scheme of the account (ed25519 or multi_ed25519)
-/// `account_public_key_bytes` is the public key of the account owner
+/// `account_scheme` is the scheme of the account (ed25519 or multi_ed25519).
+/// `account_public_key_bytes` is the public key of the account owner.
 /// `recipient_address` is the address of the recipient of the signer capability - note that if there's an existing
 /// `recipient_address` in the account owner's `SignerCapabilityOffer`, this will replace the
 /// previous `recipient_address` upon successful verification (the previous recipient will no longer have access
-/// to the account owner's signer capability)
+/// to the account owner's signer capability).
 pub fn account_offer_signer_capability(
     signer_capability_sig_bytes: Vec<u8>,
     account_scheme: u8,
@@ -769,6 +799,8 @@ pub fn account_offer_signer_capability(
     ))
 }
 
+/// Revoke the account owner's signer capability offer for `to_be_revoked_address` (i.e., the address that
+/// has a signer capability offer from `account` but will be revoked in this function).
 pub fn account_revoke_signer_capability(
     to_be_revoked_address: AccountAddress,
 ) -> TransactionPayload {
@@ -787,12 +819,16 @@ pub fn account_revoke_signer_capability(
 }
 
 /// Generic authentication key rotation function that allows the user to rotate their authentication key from any scheme to any scheme.
-/// To authorize the rotation, a signature by the current private key on a valid RotationProofChallenge (`cap_rotate_key`)
-/// demonstrates that the user intends to and has the capability to rotate the authentication key. A signature by the new
-/// private key on a valid RotationProofChallenge (`cap_update_table`) verifies that the user has the capability to update the
-/// value at key `auth_key` on the `OriginatingAddress` table. `from_scheme` refers to the scheme of the `from_public_key` and
-/// `to_scheme` refers to the scheme of the `to_public_key`. A scheme of 0 refers to an Ed25519 key and a scheme of 1 refers to
-/// Multi-Ed25519 keys.
+/// To authorize the rotation, we need two signatures:
+/// - the first signature `cap_rotate_key` refers to the signature by the account owner's current key on a valid `RotationProofChallenge`,
+/// demonstrating that the user intends to and has the capability to rotate the authentication key of this account;
+/// - the second signature `cap_update_table` refers to the signature by the new key (that the account owner wants to rotate to) on a
+/// valid `RotationProofChallenge`, demonstrating that the user owns the new private key, and has the authority to update the
+/// `OriginatingAddress` map with the new address mapping <new_address, originating_address>.
+/// To verify signatures, we need their corresponding public key and public key scheme: we use `from_scheme` and `from_public_key_bytes`
+/// to verify `cap_rotate_key`, and `to_scheme` and `to_public_key_bytes` to verify `cap_update_table`.
+/// A scheme of 0 refers to an Ed25519 key and a scheme of 1 refers to Multi-Ed25519 keys.
+/// `originating address` refers to an account's original/first address.
 pub fn account_rotate_authentication_key(
     from_scheme: u8,
     from_public_key_bytes: Vec<u8>,
@@ -922,7 +958,7 @@ pub fn aptos_governance_add_approved_script_hash_script(proposal_id: u64) -> Tra
     ))
 }
 
-/// Create a proposal with the backing `stake_pool`.
+/// Create a single-step proposal with the backing `stake_pool`.
 /// @param execution_hash Required. This is the hash of the resolution script. When the proposal is resolved,
 /// only the exact script with matching hash can be successfully executed.
 pub fn aptos_governance_create_proposal(
@@ -946,6 +982,36 @@ pub fn aptos_governance_create_proposal(
             bcs::to_bytes(&execution_hash).unwrap(),
             bcs::to_bytes(&metadata_location).unwrap(),
             bcs::to_bytes(&metadata_hash).unwrap(),
+        ],
+    ))
+}
+
+/// Create a single-step or multi-step proposal with the backing `stake_pool`.
+/// @param execution_hash Required. This is the hash of the resolution script. When the proposal is resolved,
+/// only the exact script with matching hash can be successfully executed.
+pub fn aptos_governance_create_proposal_v2(
+    stake_pool: AccountAddress,
+    execution_hash: Vec<u8>,
+    metadata_location: Vec<u8>,
+    metadata_hash: Vec<u8>,
+    is_multi_step_proposal: bool,
+) -> TransactionPayload {
+    TransactionPayload::EntryFunction(EntryFunction::new(
+        ModuleId::new(
+            AccountAddress::new([
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 1,
+            ]),
+            ident_str!("aptos_governance").to_owned(),
+        ),
+        ident_str!("create_proposal_v2").to_owned(),
+        vec![],
+        vec![
+            bcs::to_bytes(&stake_pool).unwrap(),
+            bcs::to_bytes(&execution_hash).unwrap(),
+            bcs::to_bytes(&metadata_location).unwrap(),
+            bcs::to_bytes(&metadata_hash).unwrap(),
+            bcs::to_bytes(&is_multi_step_proposal).unwrap(),
         ],
     ))
 }
@@ -2208,6 +2274,22 @@ mod decoder {
         }
     }
 
+    pub fn aptos_governance_create_proposal_v2(
+        payload: &TransactionPayload,
+    ) -> Option<EntryFunctionCall> {
+        if let TransactionPayload::EntryFunction(script) = payload {
+            Some(EntryFunctionCall::AptosGovernanceCreateProposalV2 {
+                stake_pool: bcs::from_bytes(script.args().get(0)?).ok()?,
+                execution_hash: bcs::from_bytes(script.args().get(1)?).ok()?,
+                metadata_location: bcs::from_bytes(script.args().get(2)?).ok()?,
+                metadata_hash: bcs::from_bytes(script.args().get(3)?).ok()?,
+                is_multi_step_proposal: bcs::from_bytes(script.args().get(4)?).ok()?,
+            })
+        } else {
+            None
+        }
+    }
+
     pub fn aptos_governance_vote(payload: &TransactionPayload) -> Option<EntryFunctionCall> {
         if let TransactionPayload::EntryFunction(script) = payload {
             Some(EntryFunctionCall::AptosGovernanceVote {
@@ -2920,6 +3002,10 @@ static SCRIPT_FUNCTION_DECODER_MAP: once_cell::sync::Lazy<EntryFunctionDecoderMa
         map.insert(
             "aptos_governance_create_proposal".to_string(),
             Box::new(decoder::aptos_governance_create_proposal),
+        );
+        map.insert(
+            "aptos_governance_create_proposal_v2".to_string(),
+            Box::new(decoder::aptos_governance_create_proposal_v2),
         );
         map.insert(
             "aptos_governance_vote".to_string(),

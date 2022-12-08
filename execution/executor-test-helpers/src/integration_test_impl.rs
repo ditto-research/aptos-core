@@ -3,6 +3,8 @@
 
 use crate::{bootstrap_genesis, gen_block_id, gen_ledger_info_with_sigs};
 use anyhow::{anyhow, ensure, Result};
+use aptos_cached_packages::aptos_stdlib;
+use aptos_consensus_types::block::Block;
 use aptos_sdk::{
     transaction_builder::TransactionFactory,
     types::{AccountKey, LocalAccount},
@@ -24,8 +26,6 @@ use aptos_types::{
 };
 use aptos_vm::AptosVM;
 use aptosdb::AptosDB;
-use cached_packages::aptos_stdlib;
-use consensus_types::block::Block;
 use executor::block_executor::BlockExecutor;
 use executor_types::BlockExecutorTrait;
 use rand::SeedableRng;
@@ -496,7 +496,7 @@ pub fn test_execution_with_storage_impl() -> Arc<AptosDB> {
 }
 
 fn approx_eq(a: u64, b: u64) -> bool {
-    const M: u64 = 1_000_000;
+    const M: u64 = 10_000_000;
     a + M > b && b + M > a
 }
 

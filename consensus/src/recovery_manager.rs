@@ -12,12 +12,12 @@ use crate::{
     state_replication::StateComputer,
 };
 use anyhow::{anyhow, ensure, Context, Result};
+use aptos_consensus_types::{
+    common::Author, proposal_msg::ProposalMsg, sync_info::SyncInfo, vote_msg::VoteMsg,
+};
 use aptos_logger::prelude::*;
 use aptos_types::{block_info::Round, epoch_state::EpochState};
 use channel::aptos_channel;
-use consensus_types::{
-    common::Author, proposal_msg::ProposalMsg, sync_info::SyncInfo, vote_msg::VoteMsg,
-};
 use futures::{FutureExt, StreamExt};
 use futures_channel::oneshot;
 use std::{mem::Discriminant, process, sync::Arc};
@@ -134,7 +134,7 @@ impl RecoveryManager {
                         },
                         Err(e) => {
                             counters::ERROR_COUNT.inc();
-                            error!(error = ?e, kind = error_kind(&e));
+                            warn!(error = ?e, kind = error_kind(&e));
                         }
                     }
                 }

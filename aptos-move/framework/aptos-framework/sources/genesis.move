@@ -462,8 +462,9 @@ module aptos_framework::genesis {
         initialize(
             x"000000000000000000", // empty gas schedule
             4u8, // TESTING chain ID
-            0,
-            x"12",
+            0, // initial version
+            x"12", // conesus config
+            x"13", // execution config
             epoch_interval_microsecs,
             minimum_stake,
             maximum_stake,

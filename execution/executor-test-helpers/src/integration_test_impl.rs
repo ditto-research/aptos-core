@@ -1,22 +1,27 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{bootstrap_genesis, gen_block_id, gen_ledger_info_with_sigs};
 use anyhow::{anyhow, ensure, Result};
 use aptos_cached_packages::aptos_stdlib;
 use aptos_consensus_types::block::Block;
+use aptos_db::AptosDB;
+use aptos_executor::block_executor::BlockExecutor;
+use aptos_executor_types::BlockExecutorTrait;
 use aptos_sdk::{
     transaction_builder::TransactionFactory,
     types::{AccountKey, LocalAccount},
 };
 use aptos_state_view::account_with_state_view::{AccountWithStateView, AsAccountWithStateView};
+use aptos_storage_interface::{state_view::DbStateViewAtVersion, DbReaderWriter, Order};
 use aptos_types::{
     account_config::aptos_test_root_address,
     account_view::AccountView,
     block_metadata::BlockMetadata,
     chain_id::ChainId,
     event::EventKey,
-    test_helpers::transaction_test_helpers::block,
+    test_helpers::transaction_test_helpers::{block, BLOCK_GAS_LIMIT},
     transaction::{
         Transaction, Transaction::UserTransaction, TransactionListWithProof, TransactionWithProof,
         WriteSetPayload,
@@ -25,23 +30,18 @@ use aptos_types::{
     waypoint::Waypoint,
 };
 use aptos_vm::AptosVM;
-use aptosdb::AptosDB;
-use executor::block_executor::BlockExecutor;
-use executor_types::BlockExecutorTrait;
 use rand::SeedableRng;
 use std::sync::Arc;
-
-use storage_interface::{state_view::DbStateViewAtVersion, DbReaderWriter, Order};
 
 pub fn test_execution_with_storage_impl() -> Arc<AptosDB> {
     const B: u64 = 1_000_000_000;
 
-    let (genesis, validators) = vm_genesis::test_genesis_change_set_and_validators(Some(1));
+    let (genesis, validators) = aptos_vm_genesis::test_genesis_change_set_and_validators(Some(1));
     let genesis_txn = Transaction::GenesisTransaction(WriteSetPayload::Direct(genesis));
 
     let mut core_resources_account: LocalAccount = LocalAccount::new(
         aptos_test_root_address(),
-        AccountKey::from_private_key(vm_genesis::GENESIS_KEYPAIR.0.clone()),
+        AccountKey::from_private_key(aptos_vm_genesis::GENESIS_KEYPAIR.0.clone()),
         0,
     );
 
@@ -160,10 +160,14 @@ pub fn test_execution_with_storage_impl() -> Arc<AptosDB> {
             txn_factory.transfer(account3.address(), 10 * B),
         )));
     }
-    let block3 = block(block3); // append state checkpoint txn
+    let block3 = block(block3, BLOCK_GAS_LIMIT); // append state checkpoint txn
 
     let output1 = executor
-        .execute_block((block1_id, block1.clone()), parent_block_id)
+        .execute_block(
+            (block1_id, block1.clone()).into(),
+            parent_block_id,
+            BLOCK_GAS_LIMIT,
+        )
         .unwrap();
     let li1 = gen_ledger_info_with_sigs(1, &output1, block1_id, &[signer.clone()]);
     let epoch2_genesis_id = Block::make_genesis_block_from_ledger_info(li1.ledger_info()).id();
@@ -371,7 +375,11 @@ pub fn test_execution_with_storage_impl() -> Arc<AptosDB> {
 
     // Execute block 2, 3, 4
     let output2 = executor
-        .execute_block((block2_id, block2), epoch2_genesis_id)
+        .execute_block(
+            (block2_id, block2).into(),
+            epoch2_genesis_id,
+            BLOCK_GAS_LIMIT,
+        )
         .unwrap();
     let li2 = gen_ledger_info_with_sigs(2, &output2, block2_id, &[signer.clone()]);
     let epoch3_genesis_id = Block::make_genesis_block_from_ledger_info(li2.ledger_info()).id();
@@ -386,7 +394,11 @@ pub fn test_execution_with_storage_impl() -> Arc<AptosDB> {
     assert_eq!(current_version, 13);
 
     let output3 = executor
-        .execute_block((block3_id, block3.clone()), epoch3_genesis_id)
+        .execute_block(
+            (block3_id, block3.clone()).into(),
+            epoch3_genesis_id,
+            BLOCK_GAS_LIMIT,
+        )
         .unwrap();
     let li3 = gen_ledger_info_with_sigs(3, &output3, block3_id, &[signer]);
     executor.commit_blocks(vec![block3_id], li3).unwrap();
@@ -429,9 +441,12 @@ pub fn test_execution_with_storage_impl() -> Arc<AptosDB> {
     })
     .unwrap();
 
+    // With block gas limit, StateCheckpoint txn is inserted to block after execution.
+    let diff = BLOCK_GAS_LIMIT.map(|_| 0).unwrap_or(1);
+
     let transaction_list_with_proof = db
         .reader
-        .get_transactions(14, 16, current_version, false)
+        .get_transactions(14, 15 + diff, current_version, false)
         .unwrap();
     verify_transactions(&transaction_list_with_proof, &block3).unwrap();
 

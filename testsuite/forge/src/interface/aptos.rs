@@ -1,4 +1,4 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
 use super::Test;
@@ -12,6 +12,7 @@ use aptos_sdk::{
     transaction_builder::TransactionFactory,
     types::{
         account_address::AccountAddress,
+        account_config::CORE_CODE_ADDRESS,
         chain_id::ChainId,
         transaction::{
             authenticator::{AuthenticationKey, AuthenticationKeyPreimage},
@@ -22,6 +23,7 @@ use aptos_sdk::{
 };
 use rand::{rngs::OsRng, Rng, SeedableRng};
 use reqwest::Url;
+use serde::{Deserialize, Serialize};
 
 #[async_trait::async_trait]
 pub trait AptosTest: Test {
@@ -111,6 +113,7 @@ impl<'t> AptosContext<'t> {
 
 pub struct AptosPublicInfo<'t> {
     chain_id: ChainId,
+    inspection_service_url: Url,
     rest_api_url: Url,
     rest_client: RestClient,
     root_account: &'t mut LocalAccount,
@@ -120,11 +123,14 @@ pub struct AptosPublicInfo<'t> {
 impl<'t> AptosPublicInfo<'t> {
     pub fn new(
         chain_id: ChainId,
+        inspection_service_url_str: String,
         rest_api_url_str: String,
         root_account: &'t mut LocalAccount,
     ) -> Self {
         let rest_api_url = Url::parse(&rest_api_url_str).unwrap();
+        let inspection_service_url = Url::parse(&inspection_service_url_str).unwrap();
         Self {
+            inspection_service_url,
             rest_client: RestClient::new(rest_api_url.clone()),
             rest_api_url,
             chain_id,
@@ -139,6 +145,10 @@ impl<'t> AptosPublicInfo<'t> {
 
     pub fn url(&self) -> &str {
         self.rest_api_url.as_str()
+    }
+
+    pub fn inspection_service_url(&self) -> &str {
+        self.inspection_service_url.as_str()
     }
 
     pub fn root_account(&mut self) -> &mut LocalAccount {
@@ -199,6 +209,28 @@ impl<'t> AptosPublicInfo<'t> {
         TransactionFactory::new(self.chain_id).with_gas_unit_price(unit_price)
     }
 
+    pub async fn get_approved_execution_hash_at_aptos_governance(
+        &self,
+        proposal_id: u64,
+    ) -> Vec<u8> {
+        let approved_execution_hashes = self
+            .rest_client
+            .get_account_resource_bcs::<SimpleMap<u64, Vec<u8>>>(
+                CORE_CODE_ADDRESS,
+                "0x1::aptos_governance::ApprovedExecutionHashes",
+            )
+            .await;
+        let hashes = approved_execution_hashes.unwrap().into_inner().data;
+        let mut execution_hash = vec![];
+        for hash in hashes {
+            if hash.key == proposal_id {
+                execution_hash = hash.value;
+                break;
+            }
+        }
+        execution_hash
+    }
+
     pub async fn get_balance(&self, address: AccountAddress) -> Option<u64> {
         let module = Identifier::new("coin".to_string()).unwrap();
         let name = Identifier::new("CoinStore".to_string()).unwrap();
@@ -239,6 +271,19 @@ impl<'t> AptosPublicInfo<'t> {
             self.root_account,
         )
         .await
+    }
+
+    /// Syncs the root account to it's sequence number in the event that a faucet changed it's value
+    pub async fn sync_root_account_sequence_number(&mut self) {
+        let root_address = self.root_account().address();
+        let root_sequence_number = self
+            .client()
+            .get_account_bcs(root_address)
+            .await
+            .unwrap()
+            .into_inner()
+            .sequence_number();
+        *self.root_account().sequence_number_mut() = root_sequence_number;
     }
 }
 
@@ -305,4 +350,15 @@ pub async fn submit_and_wait_reconfig(client: &RestClient, txn: SignedTransactio
     assert_ne!(state.epoch, new_state.epoch);
 
     new_state
+}
+
+#[derive(Serialize, Deserialize)]
+struct SimpleMap<K, V> {
+    data: Vec<Element<K, V>>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Element<K, V> {
+    key: K,
+    value: V,
 }

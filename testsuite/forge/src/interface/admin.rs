@@ -1,4 +1,5 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 use super::{ChainInfo, CoreContext, Test};
@@ -12,7 +13,7 @@ use reqwest::Url;
 /// of the validators or full nodes running on the network.
 pub trait AdminTest: Test {
     /// Executes the test against the given context.
-    fn run<'t>(&self, ctx: &mut AdminContext<'t>) -> Result<()>;
+    fn run(&self, ctx: &mut AdminContext<'_>) -> Result<()>;
 }
 
 #[derive(Debug)]

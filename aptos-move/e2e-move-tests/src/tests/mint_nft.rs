@@ -1,13 +1,15 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{assert_success, tests::common, MoveHarness};
-use aptos_crypto::ed25519::Ed25519Signature;
-use aptos_crypto::SigningKey;
-use aptos_types::state_store::table::TableHandle;
+use aptos_crypto::{
+    ed25519::{Ed25519PrivateKey, Ed25519Signature},
+    SigningKey, ValidCryptoMaterialStringExt,
+};
 use aptos_types::{
-    account_address::create_resource_address, account_address::AccountAddress, event::EventHandle,
-    state_store::state_key::StateKey,
+    account_address::{create_resource_address, AccountAddress},
+    event::EventHandle,
+    state_store::{state_key::StateKey, table::TableHandle},
 };
 use move_core_types::parser::parse_struct_tag;
 use serde::{Deserialize, Serialize};
@@ -53,7 +55,7 @@ fn mint_nft_e2e() {
     let resource_address = create_resource_address(*acc.address(), &[]);
 
     // give a named address to the `mint_nft` module publisher
-    let mut build_options = framework::BuildOptions::default();
+    let mut build_options = aptos_framework::BuildOptions::default();
     build_options
         .named_addresses
         .insert("mint_nft".to_string(), resource_address);
@@ -62,7 +64,7 @@ fn mint_nft_e2e() {
         .insert("source_addr".to_string(), *acc.address());
 
     // build the package from our example code
-    let package = framework::BuiltPackage::build(
+    let package = aptos_framework::BuiltPackage::build(
         common::test_dir_path("../../../move-examples/mint_nft/4-Getting-Production-Ready"),
         build_options,
     )
@@ -97,7 +99,7 @@ fn mint_nft_e2e() {
         account_address: resource_address,
         module_name: String::from("create_nft_getting_production_ready"),
         struct_name: String::from("MintProofChallenge"),
-        receiver_account_sequence_number: 10,
+        receiver_account_sequence_number: 0,
         receiver_account_address: *nft_receiver.address(),
         token_data_id,
     };
@@ -144,7 +146,7 @@ fn mint_nft_e2e() {
     // assert that the token id exists in the nft receiver's token store
     // read_state_value() will only be successful if the nft receiver's token store has this token id
     let state_key = &StateKey::table_item(token_store_table, bcs::to_bytes(&token_id).unwrap());
-    h.read_state_value(state_key).unwrap();
+    h.read_state_value_bytes(state_key).unwrap();
 }
 
 /// samples two signatures for unit tests in move-examples/
@@ -220,20 +222,20 @@ fn generate_nft_tutorial_part4_signature() {
     let mut h = MoveHarness::new();
 
     // When running this test to generate a valid signature, supply the actual resource_address to line 217.
-    // Uncomment line 217 and comment out line 218 (it's just a placeholder).
+    // Uncomment line 223 and comment out line 224 (it's just a placeholder).
     // let resource_address = h.new_account_at(AccountAddress::from_hex_literal("0x[resource account's address]").unwrap());
     let resource_address = h.new_account_at(AccountAddress::from_hex_literal("0xcafe").unwrap());
 
     // When running this test to generate a valid signature, supply the actual nft_receiver's address to line 222.
-    // Uncomment line 222 and comment out line 223.
+    // Uncomment line 228 and comment out line 229.
     // let nft_receiver = h.new_account_at(AccountAddress::from_hex_literal("0x[nft-receiver's address]").unwrap());
     let nft_receiver = h.new_account_at(AccountAddress::from_hex_literal("0xcafe").unwrap());
 
-    // When running this test to generate a valid signature, supply the actual private key to line 227.
-    // Uncomment line 227 and comment out line 228 - 229: they are just placeholders.
-    // let admin_private_key = Ed25519PrivateKey::from_encoded_string(value_of_private_key).unwrap();
-    let admin_account = h.new_account_with_key_pair();
-    let admin_private_key = admin_account.privkey;
+    // When running this test to generate a valid signature, supply the actual private key to replace the (0000...) in line 232.
+    let admin_private_key = Ed25519PrivateKey::from_encoded_string(
+        "0000000000000000000000000000000000000000000000000000000000000000",
+    )
+    .unwrap();
 
     // construct the token_data_id and mint_proof, which are required to mint the nft
     let token_data_id = TokenDataId {

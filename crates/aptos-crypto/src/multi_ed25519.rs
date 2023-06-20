@@ -1,4 +1,5 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 //! This module provides an API for the accountable threshold multi-sig PureEdDSA signature scheme
@@ -137,8 +138,8 @@ impl PrivateKey for MultiEd25519PrivateKey {
 }
 
 impl SigningKey for MultiEd25519PrivateKey {
-    type VerifyingKeyMaterial = MultiEd25519PublicKey;
     type SignatureMaterial = MultiEd25519Signature;
+    type VerifyingKeyMaterial = MultiEd25519PublicKey;
 
     /// Uses the first `threshold` private keys to create a MultiEd25519 signature on `message`.
     /// (Used for testing only.)
@@ -212,7 +213,7 @@ impl TryFrom<&[u8]> for MultiEd25519PrivateKey {
         if bytes.is_empty() {
             return Err(CryptoMaterialError::WrongLengthError);
         }
-        let threshold = check_and_get_threshold(bytes, ED25519_PRIVATE_KEY_LENGTH)?;
+        let (threshold, _) = check_and_get_threshold(bytes, ED25519_PRIVATE_KEY_LENGTH)?;
 
         let private_keys: Result<Vec<Ed25519PrivateKey>, _> = bytes
             .chunks_exact(ED25519_PRIVATE_KEY_LENGTH)
@@ -283,7 +284,7 @@ impl PublicKey for MultiEd25519PublicKey {
     type PrivateKeyMaterial = MultiEd25519PrivateKey;
 }
 
-#[allow(clippy::derive_hash_xor_eq)]
+#[allow(clippy::derived_hash_with_manual_eq)]
 impl std::hash::Hash for MultiEd25519PublicKey {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         let encoded_pubkey = self.to_bytes();
@@ -301,7 +302,7 @@ impl TryFrom<&[u8]> for MultiEd25519PublicKey {
         if bytes.is_empty() {
             return Err(CryptoMaterialError::WrongLengthError);
         }
-        let threshold = check_and_get_threshold(bytes, ED25519_PUBLIC_KEY_LENGTH)?;
+        let (threshold, _) = check_and_get_threshold(bytes, ED25519_PUBLIC_KEY_LENGTH)?;
         let public_keys: Result<Vec<Ed25519PublicKey>, _> = bytes
             .chunks_exact(ED25519_PUBLIC_KEY_LENGTH)
             .map(Ed25519PublicKey::try_from)
@@ -315,13 +316,13 @@ impl TryFrom<&[u8]> for MultiEd25519PublicKey {
 
 /// We deduce VerifyingKey from pointing to the signature material
 impl VerifyingKey for MultiEd25519PublicKey {
-    type SigningKeyMaterial = MultiEd25519PrivateKey;
     type SignatureMaterial = MultiEd25519Signature;
+    type SigningKeyMaterial = MultiEd25519PrivateKey;
 }
 
 impl fmt::Display for MultiEd25519PublicKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", hex::encode(&self.to_bytes()))
+        write!(f, "{}", hex::encode(self.to_bytes()))
     }
 }
 
@@ -456,7 +457,7 @@ impl Length for MultiEd25519Signature {
     }
 }
 
-#[allow(clippy::derive_hash_xor_eq)]
+#[allow(clippy::derived_hash_with_manual_eq)]
 impl std::hash::Hash for MultiEd25519Signature {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         let encoded_signature = self.to_bytes();
@@ -483,8 +484,8 @@ impl ValidCryptoMaterial for MultiEd25519Signature {
 }
 
 impl Signature for MultiEd25519Signature {
-    type VerifyingKeyMaterial = MultiEd25519PublicKey;
     type SigningKeyMaterial = MultiEd25519PrivateKey;
+    type VerifyingKeyMaterial = MultiEd25519PublicKey;
 
     fn verify<T: CryptoHash + Serialize>(
         &self,
@@ -516,7 +517,7 @@ impl Signature for MultiEd25519Signature {
                     "{}",
                     CryptoMaterialError::BitVecError("Signature index is out of range".to_string())
                 ))
-            }
+            },
         };
         if bitmap_count_ones(self.bitmap) < public_key.threshold as u32 {
             return Err(anyhow!(
@@ -532,7 +533,7 @@ impl Signature for MultiEd25519Signature {
             while !bitmap_get_bit(self.bitmap, bitmap_index) {
                 bitmap_index += 1;
             }
-            sig.verify_arbitrary_msg(message, &public_key.public_keys[bitmap_index as usize])?;
+            sig.verify_arbitrary_msg(message, &public_key.public_keys[bitmap_index])?;
             bitmap_index += 1;
         }
         Ok(())
@@ -567,11 +568,11 @@ fn to_bytes<T: ValidCryptoMaterial>(keys: &[T], threshold: u8) -> Vec<u8> {
     bytes
 }
 
-// Helper method to get threshold from a serialized MultiEd25519 key payload.
-fn check_and_get_threshold(
+/// Helper method to get the threshold `t` and the # of sub PKs `n` from a serialized `t`-out-of-`n` MultiEd25519 key payload.
+pub fn check_and_get_threshold(
     bytes: &[u8],
     key_size: usize,
-) -> std::result::Result<u8, CryptoMaterialError> {
+) -> std::result::Result<(u8, u8), CryptoMaterialError> {
     let payload_length = bytes.len();
     if bytes.is_empty() {
         return Err(CryptoMaterialError::WrongLengthError);
@@ -585,7 +586,7 @@ fn check_and_get_threshold(
     } else if threshold_byte == 0 || threshold_byte > num_of_keys as u8 {
         Err(CryptoMaterialError::ValidationError)
     } else {
-        Ok(threshold_byte)
+        Ok((threshold_byte, num_of_keys as u8))
     }
 }
 

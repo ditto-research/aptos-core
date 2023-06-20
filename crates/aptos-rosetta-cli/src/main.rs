@@ -1,4 +1,4 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
 //! Aptos Rosetta CLI
@@ -46,6 +46,6 @@ async fn main() {
             };
             println!("{}", serde_json::to_string_pretty(&error).unwrap());
             exit(-1)
-        }
+        },
     }
 }

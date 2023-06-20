@@ -1,27 +1,33 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::requests::DataRequest::{
-    GetEpochEndingLedgerInfos, GetNewTransactionOutputsWithProof,
-    GetNewTransactionsOrOutputsWithProof, GetNewTransactionsWithProof, GetNumberOfStatesAtVersion,
-    GetServerProtocolVersion, GetStateValuesWithProof, GetStorageServerSummary,
-    GetTransactionOutputsWithProof, GetTransactionsOrOutputsWithProof, GetTransactionsWithProof,
+use crate::{
+    requests::DataRequest::{
+        GetEpochEndingLedgerInfos, GetNewTransactionOutputsWithProof,
+        GetNewTransactionsOrOutputsWithProof, GetNewTransactionsWithProof,
+        GetNumberOfStatesAtVersion, GetServerProtocolVersion, GetStateValuesWithProof,
+        GetStorageServerSummary, GetTransactionOutputsWithProof, GetTransactionsOrOutputsWithProof,
+        GetTransactionsWithProof,
+    },
+    responses::Error::DegenerateRangeError,
+    Epoch, StorageServiceRequest, COMPRESSION_SUFFIX_LABEL,
 };
-use crate::responses::Error::DegenerateRangeError;
-use crate::{Epoch, StorageServiceRequest, COMPRESSION_SUFFIX_LABEL};
-use aptos_compression::metrics::CompressionClient;
-use aptos_compression::{CompressedData, CompressionError};
+use aptos_compression::{metrics::CompressionClient, CompressedData, CompressionError};
 use aptos_config::config::{StorageServiceConfig, MAX_APPLICATION_MESSAGE_SIZE};
-use aptos_types::epoch_change::EpochChangeProof;
-use aptos_types::ledger_info::LedgerInfoWithSignatures;
-use aptos_types::state_store::state_value::StateValueChunkWithProof;
-use aptos_types::transaction::{TransactionListWithProof, TransactionOutputListWithProof, Version};
+use aptos_types::{
+    epoch_change::EpochChangeProof,
+    ledger_info::LedgerInfoWithSignatures,
+    state_store::state_value::StateValueChunkWithProof,
+    transaction::{TransactionListWithProof, TransactionOutputListWithProof, Version},
+};
 use num_traits::{PrimInt, Zero};
 #[cfg(test)]
 use proptest::prelude::{any, Arbitrary, BoxedStrategy, Strategy};
 use serde::{Deserialize, Serialize};
-use std::convert::TryFrom;
-use std::fmt::{Display, Formatter};
+use std::{
+    convert::TryFrom,
+    fmt::{Display, Formatter},
+};
 use thiserror::Error;
 
 /// The version delta we'll tolerate when considering if a peer is eligible
@@ -86,7 +92,7 @@ impl StorageServiceResponse {
                 let data_response = bcs::from_bytes::<DataResponse>(&raw_data)
                     .map_err(|error| Error::UnexpectedErrorEncountered(error.to_string()))?;
                 Ok(data_response)
-            }
+            },
             StorageServiceResponse::RawResponse(data_response) => Ok(data_response.clone()),
         }
     }
@@ -97,7 +103,7 @@ impl StorageServiceResponse {
             StorageServiceResponse::CompressedResponse(label, _) => label.clone(),
             StorageServiceResponse::RawResponse(data_response) => {
                 data_response.get_label().to_string()
-            }
+            },
         }
     }
 
@@ -155,7 +161,7 @@ impl Display for DataResponse {
         let data = match self {
             DataResponse::StorageServerSummary(storage_summary) => {
                 format!("{:?}", storage_summary)
-            }
+            },
             _ => "...".into(),
         };
         write!(
@@ -169,6 +175,7 @@ impl Display for DataResponse {
 
 impl TryFrom<StorageServiceResponse> for StateValueChunkWithProof {
     type Error = crate::responses::Error;
+
     fn try_from(response: StorageServiceResponse) -> crate::Result<Self, Self::Error> {
         let data_response = response.get_data_response()?;
         match data_response {
@@ -183,6 +190,7 @@ impl TryFrom<StorageServiceResponse> for StateValueChunkWithProof {
 
 impl TryFrom<StorageServiceResponse> for EpochChangeProof {
     type Error = crate::responses::Error;
+
     fn try_from(response: StorageServiceResponse) -> crate::Result<Self, Self::Error> {
         let data_response = response.get_data_response()?;
         match data_response {
@@ -199,6 +207,7 @@ impl TryFrom<StorageServiceResponse>
     for (TransactionOutputListWithProof, LedgerInfoWithSignatures)
 {
     type Error = crate::responses::Error;
+
     fn try_from(response: StorageServiceResponse) -> crate::Result<Self, Self::Error> {
         let data_response = response.get_data_response()?;
         match data_response {
@@ -213,6 +222,7 @@ impl TryFrom<StorageServiceResponse>
 
 impl TryFrom<StorageServiceResponse> for (TransactionListWithProof, LedgerInfoWithSignatures) {
     type Error = crate::responses::Error;
+
     fn try_from(response: StorageServiceResponse) -> crate::Result<Self, Self::Error> {
         let data_response = response.get_data_response()?;
         match data_response {
@@ -227,6 +237,7 @@ impl TryFrom<StorageServiceResponse> for (TransactionListWithProof, LedgerInfoWi
 
 impl TryFrom<StorageServiceResponse> for u64 {
     type Error = crate::responses::Error;
+
     fn try_from(response: StorageServiceResponse) -> crate::Result<Self, Self::Error> {
         let data_response = response.get_data_response()?;
         match data_response {
@@ -241,6 +252,7 @@ impl TryFrom<StorageServiceResponse> for u64 {
 
 impl TryFrom<StorageServiceResponse> for ServerProtocolVersion {
     type Error = crate::responses::Error;
+
     fn try_from(response: StorageServiceResponse) -> crate::Result<Self, Self::Error> {
         let data_response = response.get_data_response()?;
         match data_response {
@@ -255,6 +267,7 @@ impl TryFrom<StorageServiceResponse> for ServerProtocolVersion {
 
 impl TryFrom<StorageServiceResponse> for StorageServerSummary {
     type Error = crate::responses::Error;
+
     fn try_from(response: StorageServiceResponse) -> crate::Result<Self, Self::Error> {
         let data_response = response.get_data_response()?;
         match data_response {
@@ -269,6 +282,7 @@ impl TryFrom<StorageServiceResponse> for StorageServerSummary {
 
 impl TryFrom<StorageServiceResponse> for TransactionOutputListWithProof {
     type Error = crate::responses::Error;
+
     fn try_from(response: StorageServiceResponse) -> crate::Result<Self, Self::Error> {
         let data_response = response.get_data_response()?;
         match data_response {
@@ -283,6 +297,7 @@ impl TryFrom<StorageServiceResponse> for TransactionOutputListWithProof {
 
 impl TryFrom<StorageServiceResponse> for TransactionListWithProof {
     type Error = crate::responses::Error;
+
     fn try_from(response: StorageServiceResponse) -> crate::Result<Self, Self::Error> {
         let data_response = response.get_data_response()?;
         match data_response {
@@ -299,6 +314,7 @@ impl TryFrom<StorageServiceResponse>
     for (TransactionOrOutputListWithProof, LedgerInfoWithSignatures)
 {
     type Error = crate::responses::Error;
+
     fn try_from(response: StorageServiceResponse) -> crate::Result<Self, Self::Error> {
         let data_response = response.get_data_response()?;
         match data_response {
@@ -313,6 +329,7 @@ impl TryFrom<StorageServiceResponse>
 
 impl TryFrom<StorageServiceResponse> for TransactionOrOutputListWithProof {
     type Error = crate::responses::Error;
+
     fn try_from(response: StorageServiceResponse) -> crate::Result<Self, Self::Error> {
         let data_response = response.get_data_response()?;
         match data_response {
@@ -358,62 +375,11 @@ pub struct ProtocolMetadata {
 }
 
 impl ProtocolMetadata {
-    /// Returns true iff the request can be serviced
-    pub fn can_service(&self, request: &StorageServiceRequest) -> bool {
-        match &request.data_request {
-            GetNewTransactionsWithProof(_)
-            | GetNewTransactionOutputsWithProof(_)
-            | GetNewTransactionsOrOutputsWithProof(_)
-            | GetNumberOfStatesAtVersion(_)
-            | GetServerProtocolVersion
-            | GetStorageServerSummary => true,
-            GetStateValuesWithProof(request) => CompleteDataRange::new(
-                request.start_index,
-                request.end_index,
-            )
-            .map_or(false, |range| {
-                range
-                    .len()
-                    .map_or(false, |chunk_size| self.max_state_chunk_size >= chunk_size)
-            }),
-            GetEpochEndingLedgerInfos(request) => CompleteDataRange::new(
-                request.start_epoch,
-                request.expected_end_epoch,
-            )
-            .map_or(false, |range| {
-                range
-                    .len()
-                    .map_or(false, |chunk_size| self.max_epoch_chunk_size >= chunk_size)
-            }),
-            GetTransactionOutputsWithProof(request) => CompleteDataRange::new(
-                request.start_version,
-                request.end_version,
-            )
-            .map_or(false, |range| {
-                range.len().map_or(false, |chunk_size| {
-                    self.max_transaction_output_chunk_size >= chunk_size
-                })
-            }),
-            GetTransactionsWithProof(request) => CompleteDataRange::new(
-                request.start_version,
-                request.end_version,
-            )
-            .map_or(false, |range| {
-                range.len().map_or(false, |chunk_size| {
-                    self.max_transaction_chunk_size >= chunk_size
-                })
-            }),
-            GetTransactionsOrOutputsWithProof(request) => CompleteDataRange::new(
-                request.start_version,
-                request.end_version,
-            )
-            .map_or(false, |range| {
-                range.len().map_or(false, |chunk_size| {
-                    self.max_transaction_chunk_size >= chunk_size
-                        && self.max_transaction_output_chunk_size >= chunk_size
-                })
-            }),
-        }
+    /// We deem all requests serviceable, even if the requested chunk
+    /// sizes are larger than the maximum sizes that can be served (the
+    /// response will simply be truncated on the server side).
+    pub fn can_service(&self, _request: &StorageServiceRequest) -> bool {
+        true // TODO: figure out if should eventually remove this
     }
 }
 
@@ -466,13 +432,13 @@ impl DataSummary {
                 self.epoch_ending_ledger_infos
                     .map(|range| range.superset_of(&desired_range))
                     .unwrap_or(false)
-            }
+            },
             GetNewTransactionOutputsWithProof(request) => {
                 self.can_service_optimistic_request(request.known_version)
-            }
+            },
             GetNewTransactionsWithProof(request) => {
                 self.can_service_optimistic_request(request.known_version)
-            }
+            },
             GetNumberOfStatesAtVersion(version) => self
                 .states
                 .map(|range| range.contains(*version))
@@ -492,7 +458,7 @@ impl DataSummary {
                     .unwrap_or(false);
 
                 can_serve_states && can_create_proof
-            }
+            },
             GetTransactionOutputsWithProof(request) => {
                 let desired_range =
                     match CompleteDataRange::new(request.start_version, request.end_version) {
@@ -512,7 +478,7 @@ impl DataSummary {
                     .unwrap_or(false);
 
                 can_serve_outputs && can_create_proof
-            }
+            },
             GetTransactionsWithProof(request) => {
                 let desired_range =
                     match CompleteDataRange::new(request.start_version, request.end_version) {
@@ -532,10 +498,10 @@ impl DataSummary {
                     .unwrap_or(false);
 
                 can_serve_txns && can_create_proof
-            }
+            },
             GetNewTransactionsOrOutputsWithProof(request) => {
                 self.can_service_optimistic_request(request.known_version)
-            }
+            },
             GetTransactionsOrOutputsWithProof(request) => {
                 let desired_range =
                     match CompleteDataRange::new(request.start_version, request.end_version) {
@@ -560,7 +526,7 @@ impl DataSummary {
                     .unwrap_or(false);
 
                 can_serve_txns && can_serve_outputs && can_create_proof
-            }
+            },
         }
     }
 
@@ -577,7 +543,7 @@ impl DataSummary {
 /// inclusive) where data is complete (i.e. there are no missing pieces of data).
 ///
 /// This is used to provide a summary of the data currently held in storage, e.g.
-/// a CompleteDataRange<Version> of (A,B) means all versions A->B (inclusive).
+/// a `CompleteDataRange<Version>` of (A,B) means all versions A->B (inclusive).
 ///
 /// Note: `CompleteDataRanges` are never degenerate (lowest > highest) and the
 /// range length is always expressible without overflowing. Constructing a
@@ -685,6 +651,8 @@ where
     T: PrimInt + Arbitrary + 'static,
 {
     type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
     fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
         (any::<T>(), any::<T>())
             .prop_filter_map("degenerate range", |(lowest, highest)| {
@@ -692,6 +660,4 @@ where
             })
             .boxed()
     }
-
-    type Strategy = BoxedStrategy<Self>;
 }

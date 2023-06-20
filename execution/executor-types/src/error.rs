@@ -1,11 +1,11 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
-
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 use aptos_crypto::HashValue;
 use aptos_types::transaction::Version;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 #[derive(Debug, Deserialize, Error, PartialEq, Eq, Serialize)]
 /// Different reasons for proposal rejection
@@ -36,6 +36,9 @@ pub enum Error {
 
     #[error("Received Empty Blocks")]
     EmptyBlocks,
+
+    #[error("request timeout")]
+    CouldNotGetData,
 }
 
 impl From<anyhow::Error> for Error {

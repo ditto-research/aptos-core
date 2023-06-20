@@ -10,7 +10,7 @@ This is a step-by-step guide to install an Aptos node using source code. Follow 
 ## Before you proceed
 
 Make sure the following are installed on your local computer:
-   - **Aptos CLI**: https://aptos.dev/cli-tools/aptos-cli-tool/install-aptos-cli
+   - **Aptos CLI**: https://aptos.dev/tools/install-cli/index
 
 ## Install
 
@@ -18,31 +18,7 @@ Make sure the following are installed on your local computer:
 Follow the below instructions **twice**, i.e., first on one machine to run a validator node and the second time on another machine to run a validator fullnode. 
 :::
 
-1. Clone the Aptos repo.
-
-      ```bash
-      git clone https://github.com/aptos-labs/aptos-core.git
-      ```
-
-2. `cd` into `aptos-core` directory.
-
-    ```bash
-    cd aptos-core
-    ```
-
-3. Run the `scripts/dev_setup.sh` Bash script as shown below. This will prepare your developer environment.
-
-    ```bash
-    ./scripts/dev_setup.sh
-    ```
-
-4. Update your current shell environment.
-
-    ```bash
-    source ~/.cargo/env
-    ```
-
-With your development environment ready, now you can start to setup your validator node.
+1. Follow steps in [Building Aptos From Source](../../../../guides/building-from-source.md)
 
 5. Checkout the `mainnet` branch using `git checkout --track origin/mainnet`.
 
@@ -105,7 +81,7 @@ With your development environment ready, now you can start to setup your validat
 
     This will create two YAML files in the `~/$WORKSPACE/$USERNAME` directory: `owner.yaml` and `operator.yaml`. 
 
-9. Download the following files by following the download commands on the [Node Files](/nodes/node-files-all-networks/node-files.md) page: 
+9. Download the following files by following the download commands on the [Node Files](../../../node-files-all-networks/node-files.md) page: 
    - `validator.yaml`
    - `fullnode.yaml`
    - `genesis.blob`
@@ -185,4 +161,6 @@ SyslogIdentifier=aptos-node
 WantedBy=multi-user.target
 ```
 
-Now you have completed setting up your node.
+You have completed setting up your node.
+
+Now proceed to [connecting to the Aptos network](../connect-to-aptos-network.md) and [establishing staking pool operations](../staking-pool-operations.md).

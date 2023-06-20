@@ -1,16 +1,17 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{LoadDestination, NetworkLoadTest};
 use anyhow::{anyhow, bail, Context};
-use aptos_logger::{info, warn};
-use forge::test_utils::consensus_utils::{
-    test_consensus_fault_tolerance, FailPointFailureInjection, NodeState,
+use aptos_forge::{
+    test_utils::consensus_utils::{
+        test_consensus_fault_tolerance, FailPointFailureInjection, NodeState,
+    },
+    NetworkContext, NetworkTest, Result, Swarm, SwarmExt, Test, TestReport,
 };
-use forge::{NetworkContext, NetworkTest, Result, Swarm, SwarmExt, Test};
+use aptos_logger::{info, warn};
 use rand::Rng;
-use std::collections::HashSet;
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 use tokio::runtime::Runtime;
 
 pub struct ChangingWorkingQuorumTest {
@@ -50,7 +51,12 @@ impl NetworkLoadTest for ChangingWorkingQuorumTest {
         }
     }
 
-    fn test(&self, swarm: &mut dyn Swarm, duration: Duration) -> Result<()> {
+    fn test(
+        &self,
+        swarm: &mut dyn Swarm,
+        _report: &mut TestReport,
+        duration: Duration,
+    ) -> Result<()> {
         let runtime = Runtime::new().unwrap();
 
         let validators = swarm.get_validator_clients_with_names();
@@ -68,14 +74,33 @@ impl NetworkLoadTest for ChangingWorkingQuorumTest {
         );
         // On every cycle, we will fail this many next nodes, and make this many previous nodes healthy again.
         let cycle_offset = max_fail_in_test / 4 + 1;
+        let num_destinations = if swarm.full_nodes().count() > 0 {
+            swarm.full_nodes().count()
+        } else if num_always_healthy > 0 {
+            num_always_healthy
+        } else {
+            swarm.validators().count()
+        };
         // Function that returns set of down nodes in a given cycle.
         let down_indices_f = move |cycle: usize| -> HashSet<usize> {
-            (0..max_fail_in_test)
+            let mut down_indices: HashSet<_> = (0..max_fail_in_test)
                 .map(|i| {
                     num_always_healthy
                         + (cycle * cycle_offset + i) % (num_validators - num_always_healthy)
                 })
-                .collect()
+                .collect();
+            // If there is a limited number of destinations and they may fail, we ensure at least one is up.
+            if num_always_healthy == 0
+                && max_fail_in_test >= num_destinations
+                && down_indices.contains(&0)
+                && down_indices.contains(&(num_destinations - 1))
+            {
+                // Replace one of the destinations with the next sequential index.
+                down_indices.remove(&((cycle * cycle_offset) % num_destinations));
+                // Notice the check will never pass with num_always_healthy > 0, so we don't consider it.
+                down_indices.insert((cycle * cycle_offset + max_fail_in_test) % num_validators);
+            };
+            down_indices
         };
         info!(
             "Always healthy {} nodes, every cycle having {} nodes out of {} down, rotating {} each cycle, expecting first {} validators to have 10x larger stake",
@@ -271,7 +296,7 @@ impl NetworkLoadTest for ChangingWorkingQuorumTest {
 }
 
 impl NetworkTest for ChangingWorkingQuorumTest {
-    fn run<'t>(&self, ctx: &mut NetworkContext<'t>) -> Result<()> {
+    fn run(&self, ctx: &mut NetworkContext<'_>) -> Result<()> {
         <dyn NetworkLoadTest>::run(self, ctx)
     }
 }

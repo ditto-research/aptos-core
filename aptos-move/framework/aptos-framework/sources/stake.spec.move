@@ -27,6 +27,13 @@ spec aptos_framework::stake {
     // Function specifications
     // -----------------------
 
+    spec initialize_validator_fees(aptos_framework: &signer) {
+        let aptos_addr = signer::address_of(aptos_framework);
+        aborts_if !system_addresses::is_aptos_framework_address(aptos_addr);
+        aborts_if exists<ValidatorFees>(aptos_addr);
+        ensures exists<ValidatorFees>(aptos_addr);
+    }
+
     // `Validator` is initialized once.
     spec initialize(aptos_framework: &signer) {
         let aptos_addr = signer::address_of(aptos_framework);
@@ -137,6 +144,7 @@ spec aptos_framework::stake {
         // The following resource requirement cannot be discharged by the global
         // invariants because this function is called during genesis.
         include ResourceRequirement;
+        include staking_config::StakingRewardsConfigRequirement;
         // This function should never abort.
         aborts_if false;
     }
@@ -150,6 +158,7 @@ spec aptos_framework::stake {
 
     spec update_stake_pool {
         include ResourceRequirement;
+        include staking_config::StakingRewardsConfigRequirement;
         aborts_if !exists<StakePool>(pool_address);
         aborts_if !exists<ValidatorConfig>(pool_address);
         aborts_if global<ValidatorConfig>(pool_address).validator_index >= len(validator_perf.validators);
@@ -257,6 +266,10 @@ spec aptos_framework::stake {
         include ResourceRequirement;
     }
 
+    spec add_transaction_fee(validator_addr: address, fee: Coin<AptosCoin>) {
+        aborts_if !exists<ValidatorFees>(@aptos_framework);
+    }
+
     spec update_voting_power_increase(increase_amount: u64) {
         let aptos = @aptos_framework;
         let pre_validator_set = global<ValidatorSet>(aptos);
@@ -342,6 +355,8 @@ spec aptos_framework::stake {
         requires exists<ValidatorPerformance>(@aptos_framework);
         requires exists<ValidatorSet>(@aptos_framework);
         requires exists<StakingConfig>(@aptos_framework);
+        requires exists<StakingRewardsConfig>(@aptos_framework) || !features::spec_periodical_reward_rate_decrease_enabled();
         requires exists<timestamp::CurrentTimeMicroseconds>(@aptos_framework);
+        requires exists<ValidatorFees>(@aptos_framework);
     }
 }

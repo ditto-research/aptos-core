@@ -1,24 +1,31 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::*;
-use rand::{Rng, SeedableRng};
-use std::fmt::{Display, Formatter};
-use std::sync::Arc;
-use std::time::Duration;
+// TODO going to remove random seed once cluster deployment supports re-run genesis
+use crate::{
+    success_criteria::SuccessCriteria,
+    system_metrics::{MetricsThreshold, SystemMetricsThreshold},
+};
+use anyhow::{bail, format_err, Error, Result};
+use aptos_framework::ReleaseBundle;
+use rand::{rngs::OsRng, Rng, SeedableRng};
 use std::{
+    fmt::{Display, Formatter},
     io::{self, Write},
     num::NonZeroUsize,
     process,
+    str::FromStr,
+    sync::Arc,
+    time::Duration,
 };
 use structopt::{clap::arg_enum, StructOpt};
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 use tokio::runtime::Runtime;
-// TODO going to remove random seed once cluster deployment supports re-run genesis
-use crate::success_criteria::SuccessCriteria;
-use crate::system_metrics::{MetricsThreshold, SystemMetricsThreshold};
-use framework::ReleaseBundle;
-use rand::rngs::OsRng;
+
+const KUBERNETES_SERVICE_HOST: &str = "KUBERNETES_SERVICE_HOST";
+pub const FORGE_RUNNER_MODE: &str = "FORGE_RUNNER_MODE";
 
 #[derive(Debug, StructOpt)]
 #[structopt(about = "Forged in Fire")]
@@ -85,13 +92,14 @@ arg_enum! {
     }
 }
 
+#[allow(clippy::derivable_impls)] // Required to overcome the limitations of arg_enum!
 impl Default for Format {
     fn default() -> Self {
         Format::Pretty
     }
 }
 
-pub fn forge_main<F: Factory>(tests: ForgeConfig<'_>, factory: F, options: &Options) -> Result<()> {
+pub fn forge_main<F: Factory>(tests: ForgeConfig, factory: F, options: &Options) -> Result<()> {
     let forge = Forge::new(options, tests, Duration::from_secs(30), factory);
 
     if options.list {
@@ -105,7 +113,7 @@ pub fn forge_main<F: Factory>(tests: ForgeConfig<'_>, factory: F, options: &Opti
         Err(e) => {
             eprintln!("Failed to run tests:\n{}", e);
             process::exit(101); // Exit with a non-zero exit code if tests failed
-        }
+        },
     }
 }
 
@@ -118,10 +126,10 @@ pub enum InitialVersion {
 pub type NodeConfigFn = Arc<dyn Fn(&mut serde_yaml::Value) + Send + Sync>;
 pub type GenesisConfigFn = Arc<dyn Fn(&mut serde_yaml::Value) + Send + Sync>;
 
-pub struct ForgeConfig<'cfg> {
-    aptos_tests: Vec<&'cfg dyn AptosTest>,
-    admin_tests: Vec<&'cfg dyn AdminTest>,
-    network_tests: Vec<&'cfg dyn NetworkTest>,
+pub struct ForgeConfig {
+    aptos_tests: Vec<Box<dyn AptosTest>>,
+    admin_tests: Vec<Box<dyn AdminTest>>,
+    network_tests: Vec<Box<dyn NetworkTest>>,
 
     /// The initial number of validators to spawn when the test harness creates a swarm
     initial_validator_count: NonZeroUsize,
@@ -146,24 +154,42 @@ pub struct ForgeConfig<'cfg> {
 
     /// Success criteria
     success_criteria: SuccessCriteria,
+
+    /// The label of existing DBs to use, if None, will create new db.
+    existing_db_tag: Option<String>,
 }
 
-impl<'cfg> ForgeConfig<'cfg> {
+impl ForgeConfig {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn with_aptos_tests(mut self, aptos_tests: Vec<&'cfg dyn AptosTest>) -> Self {
+    pub fn add_aptos_test<T: AptosTest + 'static>(mut self, aptos_test: T) -> Self {
+        self.aptos_tests.push(Box::new(aptos_test));
+        self
+    }
+
+    pub fn with_aptos_tests(mut self, aptos_tests: Vec<Box<dyn AptosTest>>) -> Self {
         self.aptos_tests = aptos_tests;
         self
     }
 
-    pub fn with_admin_tests(mut self, admin_tests: Vec<&'cfg dyn AdminTest>) -> Self {
+    pub fn add_admin_test<T: AdminTest + 'static>(mut self, admin_test: T) -> Self {
+        self.admin_tests.push(Box::new(admin_test));
+        self
+    }
+
+    pub fn with_admin_tests(mut self, admin_tests: Vec<Box<dyn AdminTest>>) -> Self {
         self.admin_tests = admin_tests;
         self
     }
 
-    pub fn with_network_tests(mut self, network_tests: Vec<&'cfg dyn NetworkTest>) -> Self {
+    pub fn add_network_test<T: NetworkTest + 'static>(mut self, network_test: T) -> Self {
+        self.network_tests.push(Box::new(network_test));
+        self
+    }
+
+    pub fn with_network_tests(mut self, network_tests: Vec<Box<dyn NetworkTest>>) -> Self {
         self.network_tests = network_tests;
         self
     }
@@ -221,24 +247,101 @@ impl<'cfg> ForgeConfig<'cfg> {
         &mut self.success_criteria
     }
 
+    pub fn with_existing_db(mut self, tag: String) -> Self {
+        self.existing_db_tag = Some(tag);
+        self
+    }
+
     pub fn number_of_tests(&self) -> usize {
         self.admin_tests.len() + self.network_tests.len() + self.aptos_tests.len()
     }
 
-    pub fn all_tests(&self) -> impl Iterator<Item = &'_ dyn Test> {
+    pub fn all_tests(&self) -> Vec<Box<AnyTestRef<'_>>> {
         self.admin_tests
             .iter()
-            .map(|t| t as &dyn Test)
-            .chain(self.network_tests.iter().map(|t| t as &dyn Test))
-            .chain(self.aptos_tests.iter().map(|t| t as &dyn Test))
+            .map(|t| Box::new(AnyTestRef::Admin(t.as_ref())))
+            .chain(
+                self.network_tests
+                    .iter()
+                    .map(|t| Box::new(AnyTestRef::Network(t.as_ref()))),
+            )
+            .chain(
+                self.aptos_tests
+                    .iter()
+                    .map(|t| Box::new(AnyTestRef::Aptos(t.as_ref()))),
+            )
+            .collect()
     }
 }
 
-impl<'cfg> Default for ForgeConfig<'cfg> {
+// Workaround way to implement all_tests, for:
+// error[E0658]: cannot cast `dyn interface::admin::AdminTest` to `dyn interface::test::Test`, trait upcasting coercion is experimental
+pub enum AnyTestRef<'a> {
+    Aptos(&'a dyn AptosTest),
+    Admin(&'a dyn AdminTest),
+    Network(&'a dyn NetworkTest),
+}
+
+impl<'a> Test for AnyTestRef<'a> {
+    fn name(&self) -> &'static str {
+        match self {
+            AnyTestRef::Aptos(t) => t.name(),
+            AnyTestRef::Admin(t) => t.name(),
+            AnyTestRef::Network(t) => t.name(),
+        }
+    }
+
+    fn ignored(&self) -> bool {
+        match self {
+            AnyTestRef::Aptos(t) => t.ignored(),
+            AnyTestRef::Admin(t) => t.ignored(),
+            AnyTestRef::Network(t) => t.ignored(),
+        }
+    }
+
+    fn should_fail(&self) -> ShouldFail {
+        match self {
+            AnyTestRef::Aptos(t) => t.should_fail(),
+            AnyTestRef::Admin(t) => t.should_fail(),
+            AnyTestRef::Network(t) => t.should_fail(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ForgeRunnerMode {
+    Local,
+    K8s,
+}
+
+impl FromStr for ForgeRunnerMode {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "local" => Ok(ForgeRunnerMode::Local),
+            "k8s" => Ok(ForgeRunnerMode::K8s),
+            _ => Err(format_err!("Invalid runner mode: {}", s)),
+        }
+    }
+}
+
+impl ForgeRunnerMode {
+    pub fn try_from_env() -> Result<ForgeRunnerMode> {
+        if let Ok(runner_mode) = std::env::var(FORGE_RUNNER_MODE) {
+            Ok(ForgeRunnerMode::from_str(&runner_mode)?)
+        } else if std::env::var(KUBERNETES_SERVICE_HOST).is_ok() {
+            Ok(ForgeRunnerMode::K8s)
+        } else {
+            Ok(ForgeRunnerMode::Local)
+        }
+    }
+}
+
+impl Default for ForgeConfig {
     fn default() -> Self {
-        let forge_run_mode =
-            std::env::var("FORGE_RUNNER_MODE").unwrap_or_else(|_| "k8s".to_string());
-        let success_criteria = if forge_run_mode.eq("local") {
+        let forge_run_mode = ForgeRunnerMode::try_from_env().unwrap_or(ForgeRunnerMode::K8s);
+        let success_criteria = if forge_run_mode == ForgeRunnerMode::Local {
             SuccessCriteria::new(600).add_no_restarts()
         } else {
             SuccessCriteria::new(3500)
@@ -264,13 +367,14 @@ impl<'cfg> Default for ForgeConfig<'cfg> {
                 mempool_backlog: 40000,
             }),
             success_criteria,
+            existing_db_tag: None,
         }
     }
 }
 
 pub struct Forge<'cfg, F> {
     options: &'cfg Options,
-    tests: ForgeConfig<'cfg>,
+    tests: ForgeConfig,
     global_duration: Duration,
     factory: F,
 }
@@ -278,7 +382,7 @@ pub struct Forge<'cfg, F> {
 impl<'cfg, F: Factory> Forge<'cfg, F> {
     pub fn new(
         options: &'cfg Options,
-        tests: ForgeConfig<'cfg>,
+        tests: ForgeConfig,
         global_duration: Duration,
         factory: F,
     ) -> Self {
@@ -291,7 +395,7 @@ impl<'cfg, F: Factory> Forge<'cfg, F> {
     }
 
     pub fn list(&self) -> Result<()> {
-        for test in self.filter_tests(self.tests.all_tests()) {
+        for test in self.filter_tests(&self.tests.all_tests()) {
             println!("{}: test", test.name());
         }
 
@@ -299,7 +403,7 @@ impl<'cfg, F: Factory> Forge<'cfg, F> {
             println!();
             println!(
                 "{} tests",
-                self.filter_tests(self.tests.all_tests()).count()
+                self.filter_tests(&self.tests.all_tests()).count()
             );
         }
 
@@ -317,8 +421,8 @@ impl<'cfg, F: Factory> Forge<'cfg, F> {
     }
 
     pub fn run(&self) -> Result<TestReport> {
-        let test_count = self.filter_tests(self.tests.all_tests()).count();
-        let filtered_out = test_count.saturating_sub(self.tests.all_tests().count());
+        let test_count = self.filter_tests(&self.tests.all_tests()).count();
+        let filtered_out = test_count.saturating_sub(self.tests.all_tests().len());
 
         let mut report = TestReport::new();
         let mut summary = TestSummary::new(test_count, filtered_out);
@@ -347,10 +451,11 @@ impl<'cfg, F: Factory> Forge<'cfg, F> {
                 self.global_duration + Duration::from_secs(NAMESPACE_CLEANUP_DURATION_BUFFER_SECS),
                 self.tests.genesis_helm_config_fn.clone(),
                 self.tests.node_helm_config_fn.clone(),
+                self.tests.existing_db_tag.clone(),
             ))?;
 
             // Run AptosTests
-            for test in self.filter_tests(self.tests.aptos_tests.iter()) {
+            for test in self.filter_tests(&self.tests.aptos_tests) {
                 let mut aptos_ctx = AptosContext::new(
                     CoreContext::from_rng(&mut rng),
                     swarm.chain_info().into_aptos_public_info(),
@@ -362,7 +467,7 @@ impl<'cfg, F: Factory> Forge<'cfg, F> {
             }
 
             // Run AdminTests
-            for test in self.filter_tests(self.tests.admin_tests.iter()) {
+            for test in self.filter_tests(&self.tests.admin_tests) {
                 let mut admin_ctx = AdminContext::new(
                     CoreContext::from_rng(&mut rng),
                     swarm.chain_info(),
@@ -373,7 +478,7 @@ impl<'cfg, F: Factory> Forge<'cfg, F> {
                 summary.handle_result(test.name().to_owned(), result)?;
             }
 
-            for test in self.filter_tests(self.tests.network_tests.iter()) {
+            for test in self.filter_tests(&self.tests.network_tests) {
                 let mut network_ctx = NetworkContext::new(
                     CoreContext::from_rng(&mut rng),
                     &mut *swarm,
@@ -402,15 +507,16 @@ impl<'cfg, F: Factory> Forge<'cfg, F> {
         if summary.success() {
             Ok(report)
         } else {
-            Err(anyhow::anyhow!("Tests Failed"))
+            bail!("Tests Failed")
         }
     }
 
-    fn filter_tests<'a, T: Test, I: Iterator<Item = T> + 'a>(
+    fn filter_tests<'a, T: Test + ?Sized>(
         &'a self,
-        tests: I,
-    ) -> impl Iterator<Item = T> + 'a {
+        tests: &'a [Box<T>],
+    ) -> impl Iterator<Item = &'a Box<T>> {
         tests
+            .iter()
             // Filter by ignored
             .filter(
                 move |test| match (self.options.include_ignored, self.options.ignored) {
@@ -459,7 +565,7 @@ fn run_test<F: FnOnce() -> Result<()>>(f: F) -> TestResult {
                 println!("::error::{:?}", e);
             }
             TestResult::FailedWithMsg(format!("{:?}", e))
-        }
+        },
     }
 }
 
@@ -488,14 +594,14 @@ impl TestSummary {
             TestResult::Ok => {
                 self.passed += 1;
                 self.write_ok()?;
-            }
+            },
             TestResult::FailedWithMsg(msg) => {
                 self.failed.push(name);
                 self.write_failed()?;
                 writeln!(self.stdout)?;
 
                 write!(self.stdout, "Error: {}", msg)?;
-            }
+            },
         }
         writeln!(self.stdout)?;
         Ok(())
@@ -557,5 +663,62 @@ impl TestSummary {
 
     fn success(&self) -> bool {
         self.failed.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_forge_runner_mode_from_env() {
+        // HACK we really should not be setting env variables in test
+
+        // Store the env variables before we mutate them
+        let original_forge_runner_mode = std::env::var(FORGE_RUNNER_MODE);
+        let original_kubernetes_service_host = std::env::var(KUBERNETES_SERVICE_HOST);
+
+        // Test the default locally
+        std::env::remove_var(FORGE_RUNNER_MODE);
+        std::env::remove_var(KUBERNETES_SERVICE_HOST);
+        let default_local_runner_mode = ForgeRunnerMode::try_from_env();
+
+        std::env::remove_var(FORGE_RUNNER_MODE);
+        std::env::set_var(KUBERNETES_SERVICE_HOST, "1.1.1.1");
+        let default_kubernetes_runner_mode = ForgeRunnerMode::try_from_env();
+
+        std::env::set_var(FORGE_RUNNER_MODE, "local");
+        std::env::set_var(KUBERNETES_SERVICE_HOST, "1.1.1.1");
+        let local_runner_mode = ForgeRunnerMode::try_from_env();
+
+        std::env::set_var(FORGE_RUNNER_MODE, "k8s");
+        std::env::remove_var(KUBERNETES_SERVICE_HOST);
+        let k8s_runner_mode = ForgeRunnerMode::try_from_env();
+
+        std::env::set_var(FORGE_RUNNER_MODE, "durian");
+        std::env::remove_var(KUBERNETES_SERVICE_HOST);
+        let invalid_runner_mode = ForgeRunnerMode::try_from_env();
+
+        // Reset the env variables after running
+        match original_forge_runner_mode {
+            Ok(mode) => std::env::set_var(FORGE_RUNNER_MODE, mode),
+            Err(_) => std::env::remove_var(FORGE_RUNNER_MODE),
+        }
+        match original_kubernetes_service_host {
+            Ok(service_host) => std::env::set_var(KUBERNETES_SERVICE_HOST, service_host),
+            Err(_) => std::env::remove_var(KUBERNETES_SERVICE_HOST),
+        }
+
+        assert_eq!(default_local_runner_mode.unwrap(), ForgeRunnerMode::Local);
+        assert_eq!(
+            default_kubernetes_runner_mode.unwrap(),
+            ForgeRunnerMode::K8s
+        );
+        assert_eq!(local_runner_mode.unwrap(), ForgeRunnerMode::Local);
+        assert_eq!(k8s_runner_mode.unwrap(), ForgeRunnerMode::K8s);
+        assert_eq!(
+            invalid_runner_mode.unwrap_err().to_string(),
+            "Invalid runner mode: durian"
+        );
     }
 }

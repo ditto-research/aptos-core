@@ -1,4 +1,5 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
@@ -36,6 +37,7 @@ use aptos_crypto::{
     traits::*,
     HashValue,
 };
+use arr_macro::arr;
 use move_core_types::language_storage::TypeTag;
 use proptest::{
     collection::{vec, SizeRange},
@@ -63,24 +65,26 @@ impl WriteOp {
 
 impl Arbitrary for WriteOp {
     type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
     fn arbitrary_with(_args: ()) -> Self::Strategy {
         prop_oneof![Self::deletion_strategy(), Self::value_strategy()].boxed()
     }
-
-    type Strategy = BoxedStrategy<Self>;
 }
 
 impl Arbitrary for WriteSetPayload {
     type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
     fn arbitrary_with(_args: ()) -> Self::Strategy {
         any::<ChangeSet>().prop_map(WriteSetPayload::Direct).boxed()
     }
-
-    type Strategy = BoxedStrategy<Self>;
 }
 
 impl Arbitrary for WriteSet {
     type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
     fn arbitrary_with(_args: ()) -> Self::Strategy {
         // XXX there's no checking for repeated access paths here, nor in write_set. Is that
         // important? Not sure.
@@ -88,7 +92,7 @@ impl Arbitrary for WriteSet {
             .prop_map(|write_set| {
                 let write_set_mut =
                     WriteSetMut::new(write_set.iter().map(|(access_path, write_op)| {
-                        (StateKey::AccessPath(access_path.clone()), write_op.clone())
+                        (StateKey::access_path(access_path.clone()), write_op.clone())
                     }));
                 write_set_mut
                     .freeze()
@@ -96,22 +100,17 @@ impl Arbitrary for WriteSet {
             })
             .boxed()
     }
-
-    type Strategy = BoxedStrategy<Self>;
 }
 
 impl Arbitrary for ChangeSet {
     type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
     fn arbitrary_with(_args: ()) -> Self::Strategy {
         (any::<WriteSet>(), vec(any::<ContractEvent>(), 0..10))
-            .prop_map(|(ws, events)| {
-                // TODO(gas): probably move LATEST_GAS_FEATURE_VERSION to global-constants
-                ChangeSet::new(ws, events, 3).unwrap()
-            })
+            .prop_map(|(ws, events)| ChangeSet::new(ws, events))
             .boxed()
     }
-
-    type Strategy = BoxedStrategy<Self>;
 }
 
 impl EventKey {
@@ -253,6 +252,8 @@ impl AccountInfoUniverse {
 
 impl Arbitrary for AccountInfoUniverse {
     type Parameters = usize;
+    type Strategy = BoxedStrategy<Self>;
+
     fn arbitrary_with(num_accounts: Self::Parameters) -> Self::Strategy {
         vec(
             (
@@ -282,8 +283,6 @@ impl Arbitrary for AccountInfoUniverse {
     fn arbitrary() -> Self::Strategy {
         unimplemented!("Size of the universe must be provided explicitly (use any_with instead).")
     }
-
-    type Strategy = BoxedStrategy<Self>;
 }
 
 #[derive(Arbitrary, Debug)]
@@ -389,16 +388,25 @@ fn new_raw_transaction(
             expiration_time_secs,
             chain_id,
         ),
+        TransactionPayload::Multisig(multisig) => RawTransaction::new_multisig(
+            sender,
+            sequence_number,
+            multisig,
+            max_gas_amount,
+            gas_unit_price,
+            expiration_time_secs,
+            chain_id,
+        ),
     }
 }
 
 impl Arbitrary for RawTransaction {
     type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
     fn arbitrary_with(_args: ()) -> Self::Strategy {
         Self::strategy_impl(any::<AccountAddress>(), any::<TransactionPayload>()).boxed()
     }
-
-    type Strategy = BoxedStrategy<Self>;
 }
 
 impl SignatureCheckedTransaction {
@@ -467,23 +475,23 @@ impl SignatureCheckedTransactionGen {
 
 impl Arbitrary for SignatureCheckedTransaction {
     type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
     fn arbitrary_with(_args: ()) -> Self::Strategy {
         Self::strategy_impl(ed25519::keypair_strategy(), any::<TransactionPayload>()).boxed()
     }
-
-    type Strategy = BoxedStrategy<Self>;
 }
 
 /// This `Arbitrary` impl only generates valid signed transactions. TODO: maybe add invalid ones?
 impl Arbitrary for SignedTransaction {
     type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
     fn arbitrary_with(_args: ()) -> Self::Strategy {
         any::<SignatureCheckedTransaction>()
             .prop_map(|txn| txn.into_inner())
             .boxed()
     }
-
-    type Strategy = BoxedStrategy<Self>;
 }
 
 impl TransactionPayload {
@@ -511,15 +519,17 @@ prop_compose! {
 
 impl Arbitrary for TransactionStatus {
     type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
     fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
         arb_transaction_status().boxed()
     }
-
-    type Strategy = BoxedStrategy<Self>;
 }
 
 impl Arbitrary for TransactionPayload {
     type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
     fn arbitrary_with(_args: ()) -> Self::Strategy {
         // Most transactions in practice will be programs, but other parts of the system should
         // at least not choke on write set strategies so introduce them with decent probability.
@@ -530,8 +540,6 @@ impl Arbitrary for TransactionPayload {
         ]
         .boxed()
     }
-
-    type Strategy = BoxedStrategy<Self>;
 }
 
 impl Arbitrary for Script {
@@ -576,6 +584,8 @@ prop_compose! {
 
 impl Arbitrary for LedgerInfoWithSignatures {
     type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
     fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
         (any::<LedgerInfo>(), (1usize..100))
             .prop_flat_map(|(ledger_info, num_validators_range)| {
@@ -605,8 +615,6 @@ impl Arbitrary for LedgerInfoWithSignatures {
             })
             .boxed()
     }
-
-    type Strategy = BoxedStrategy<Self>;
 }
 
 #[derive(Arbitrary, Debug)]
@@ -725,15 +733,17 @@ impl ContractEvent {
 
 impl Arbitrary for ContractEvent {
     type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
     fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
         ContractEvent::strategy_impl(any::<EventKey>()).boxed()
     }
-
-    type Strategy = BoxedStrategy<Self>;
 }
 
 impl Arbitrary for TransactionToCommit {
     type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
     fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
         (
             any_with::<AccountInfoUniverse>(1),
@@ -742,8 +752,6 @@ impl Arbitrary for TransactionToCommit {
             .prop_map(|(mut universe, gen)| gen.materialize(&mut universe))
             .boxed()
     }
-
-    type Strategy = BoxedStrategy<Self>;
 }
 
 /// Represents information already determined for generating a `TransactionToCommit`, along with
@@ -789,18 +797,26 @@ impl TransactionToCommitGen {
                     .materialize(index, universe)
                     .into_resource_iter()
                     .map(move |(key, value)| {
-                        let state_key = StateKey::AccessPath(AccessPath::new(address, key));
+                        let state_key = StateKey::access_path(AccessPath::new(address, key));
                         (
-                            (state_key.clone(), Some(StateValue::from(value.clone()))),
+                            (
+                                state_key.clone(),
+                                Some(StateValue::new_legacy(value.clone())),
+                            ),
                             (state_key, WriteOp::Modification(value)),
                         )
                     })
             })
             .unzip();
+        let mut sharded_state_updates = arr![HashMap::new(); 16];
+        state_updates.into_iter().for_each(|(k, v)| {
+            sharded_state_updates[k.get_shard_id() as usize].insert(k, v);
+        });
+
         TransactionToCommit::new(
             Transaction::UserTransaction(transaction),
             TransactionInfo::new_placeholder(self.gas_used, None, self.status),
-            state_updates,
+            sharded_state_updates,
             WriteSetMut::new(write_set).freeze().expect("Cannot fail"),
             events,
             false, /* event_gen never generates reconfig events */
@@ -816,6 +832,7 @@ impl TransactionToCommitGen {
 
 impl Arbitrary for TransactionToCommitGen {
     type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
 
     fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
         (
@@ -860,8 +877,6 @@ impl Arbitrary for TransactionToCommitGen {
             )
             .boxed()
     }
-
-    type Strategy = BoxedStrategy<Self>;
 }
 
 fn arb_transaction_list_with_proof() -> impl Strategy<Value = TransactionListWithProof> {
@@ -904,15 +919,17 @@ fn arb_transaction_list_with_proof() -> impl Strategy<Value = TransactionListWit
 
 impl Arbitrary for TransactionListWithProof {
     type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
     fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
         arb_transaction_list_with_proof().boxed()
     }
-
-    type Strategy = BoxedStrategy<Self>;
 }
 
 impl Arbitrary for BlockMetadata {
     type Parameters = SizeRange;
+    type Strategy = BoxedStrategy<Self>;
+
     fn arbitrary_with(num_validators_range: Self::Parameters) -> Self::Strategy {
         (
             any::<HashValue>(),
@@ -946,8 +963,6 @@ impl Arbitrary for BlockMetadata {
             )
             .boxed()
     }
-
-    type Strategy = BoxedStrategy<Self>;
 }
 
 #[derive(Debug)]
@@ -969,13 +984,13 @@ impl ValidatorSetGen {
 
 impl Arbitrary for ValidatorSetGen {
     type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
     fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
         vec(any::<Index>(), 1..3)
             .prop_map(|validators| Self { validators })
             .boxed()
     }
-
-    type Strategy = BoxedStrategy<Self>;
 }
 
 #[derive(Debug)]
@@ -1115,7 +1130,7 @@ impl BlockGen {
                 Some(HashValue::random()),
                 ExecutionStatus::Success,
             ),
-            HashMap::new(),
+            arr_macro::arr![HashMap::new(); 16],
             WriteSet::default(),
             Vec::new(),
             false,
@@ -1182,12 +1197,11 @@ pub fn arb_json_value() -> impl Strategy<Value = Value> {
 
 impl Arbitrary for ValidatorVerifier {
     type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
 
     fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
         vec(any::<ValidatorConsensusInfo>(), 1..1000)
             .prop_map(ValidatorVerifier::new)
             .boxed()
     }
-
-    type Strategy = BoxedStrategy<Self>;
 }

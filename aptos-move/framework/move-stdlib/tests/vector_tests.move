@@ -1,6 +1,7 @@
 #[test_only]
 module std::vector_tests {
     use std::vector as V;
+    use std::vector;
 
     struct R has store { }
     struct Droppable has drop {}
@@ -90,7 +91,30 @@ module std::vector_tests {
     }
 
     #[test]
-    #[expected_failure(abort_code = 1)]
+    fun test_trim() {
+        {
+            let v = V::empty<u64>();
+            assert!(&V::trim(&mut v, 0) == &vector[], 0);
+        };
+        {
+            let v = vector[1];
+            assert!(&V::trim(&mut v, 1) == &vector[], 1);
+            assert!(&V::trim(&mut v, 0) == &vector[1], 2);
+        };
+        {
+            let v = vector[1, 2];
+            assert!(&V::trim(&mut v, 0) == &vector[1, 2], 3);
+        };
+    }
+    #[test]
+    #[expected_failure(abort_code = V::EINDEX_OUT_OF_BOUNDS)]
+    fun test_trim_fail() {
+        let v = vector[1];
+        V::trim(&mut v, 2);
+    }
+
+    #[test]
+    #[expected_failure(vector_error, minor_status = 1, location = Self)]
     fun borrow_out_of_range() {
         let v = V::empty();
         V::push_back(&mut v, 7);
@@ -133,7 +157,7 @@ module std::vector_tests {
     }
 
     #[test]
-    #[expected_failure(abort_code = 3)]
+    #[expected_failure(vector_error, minor_status = 3, location = Self)]
     fun destroy_non_empty() {
         let v = V::empty();
         V::push_back(&mut v, 42);
@@ -154,7 +178,7 @@ module std::vector_tests {
     }
 
     #[test]
-    #[expected_failure(abort_code = 2)]
+    #[expected_failure(vector_error, minor_status = 2, location = Self)]
     fun pop_out_of_range() {
         let v = V::empty<u64>();
         V::pop_back(&mut v);
@@ -228,18 +252,71 @@ module std::vector_tests {
     }
 
     #[test]
-    #[expected_failure(abort_code = 0x20000)]
+    #[expected_failure(abort_code = V::EINDEX_OUT_OF_BOUNDS)]
     fun remove_empty_vector() {
         let v = V::empty<u64>();
         V::remove(&mut v, 0);
     }
 
     #[test]
-    #[expected_failure(abort_code = 0x20000)]
+    #[expected_failure(abort_code = V::EINDEX_OUT_OF_BOUNDS)]
     fun remove_out_of_bound_index() {
         let v = V::empty<u64>();
         V::push_back(&mut v, 0);
         V::remove(&mut v, 1);
+    }
+
+    #[test]
+    fun remove_value_singleton_vector() {
+        let v = V::empty();
+        V::push_back(&mut v, 0);
+        assert!(V::borrow(&V::remove_value(&mut v, &0), 0) == &0, 0);
+        assert!(V::length(&v) == 0, 0);
+    }
+
+    #[test]
+    fun remove_value_nonsingleton_vector() {
+        let v = V::empty();
+        V::push_back(&mut v, 0);
+        V::push_back(&mut v, 1);
+        V::push_back(&mut v, 2);
+        V::push_back(&mut v, 3);
+
+        assert!(V::borrow(&V::remove_value(&mut v, &2), 0) == &2, 0);
+        assert!(V::length(&v) == 3, 0);
+        assert!(*V::borrow(&v, 0) == 0, 0);
+        assert!(*V::borrow(&v, 1) == 1, 0);
+        assert!(*V::borrow(&v, 2) == 3, 0);
+    }
+
+    #[test]
+    fun remove_value_nonsingleton_vector_last_elem() {
+        let v = V::empty();
+        V::push_back(&mut v, 0);
+        V::push_back(&mut v, 1);
+        V::push_back(&mut v, 2);
+        V::push_back(&mut v, 3);
+
+        assert!(V::borrow(&V::remove_value(&mut v, &3), 0) == &3, 0);
+        assert!(V::length(&v) == 3, 0);
+        assert!(*V::borrow(&v, 0) == 0, 0);
+        assert!(*V::borrow(&v, 1) == 1, 0);
+        assert!(*V::borrow(&v, 2) == 2, 0);
+    }
+
+    #[test]
+    fun remove_value_empty_vector() {
+        let v = V::empty<u64>();
+        assert!(V::length(&V::remove_value(&mut v, &1)) == 0, 0);
+        assert!(V::length(&v) == 0, 1);
+    }
+
+    #[test]
+    fun remove_value_nonexistent() {
+        let v = V::empty<u64>();
+        V::push_back(&mut v, 0);
+        assert!(V::length(&V::remove_value(&mut v, &1)) == 0, 0);
+        assert!(V::length(&v) == 1, 1);
     }
 
     #[test]
@@ -299,14 +376,14 @@ module std::vector_tests {
     }
 
     #[test]
-    #[expected_failure(abort_code = 1)]
+    #[expected_failure(vector_error, minor_status = 1, location = Self)]
     fun swap_empty() {
         let v = V::empty<u64>();
         V::swap(&mut v, 0, 0);
     }
 
     #[test]
-    #[expected_failure(abort_code = 1)]
+    #[expected_failure(vector_error, minor_status = 1, location = Self)]
     fun swap_out_of_range() {
         let v = V::empty<u64>();
 
@@ -319,7 +396,7 @@ module std::vector_tests {
     }
 
     #[test]
-    #[expected_failure(abort_code = 0x20000)]
+    #[expected_failure(abort_code = V::EINDEX_OUT_OF_BOUNDS)]
     fun swap_remove_empty() {
         let v = V::empty<u64>();
         V::swap_remove(&mut v, 0);
@@ -377,7 +454,7 @@ module std::vector_tests {
     }
 
     #[test]
-    #[expected_failure(abort_code = 1)]
+    #[expected_failure(vector_error, minor_status = 1, location = std::vector)]
     fun swap_remove_out_of_range() {
         let v = V::empty();
         V::push_back(&mut v, 0);
@@ -499,5 +576,281 @@ module std::vector_tests {
             NotDroppable {},
             NotDroppable {}
         );
+    }
+
+    #[test]
+    fun test_for_each() {
+        let v = vector[1, 2, 3];
+        let s = 0;
+        V::for_each(v, |e| {
+            s = s + e;
+        });
+        assert!(s == 6, 0)
+    }
+
+    #[test]
+    fun test_zip() {
+        let v1 = vector[1, 2, 3];
+        let v2 = vector[10, 20, 30];
+        let s = 0;
+        V::zip(v1, v2, |e1, e2| s = s + e1 * e2);
+        assert!(s == 140, 0);
+    }
+
+    #[test]
+    // zip is an inline function so any error code will be reported at the call site.
+    #[expected_failure(abort_code = V::EVECTORS_LENGTH_MISMATCH, location = Self)]
+    fun test_zip_mismatching_lengths_should_fail() {
+        let v1 = vector[1];
+        let v2 = vector[10, 20];
+        let s = 0;
+        V::zip(v1, v2, |e1, e2| s = s + e1 * e2);
+    }
+
+    #[test]
+    fun test_enumerate_ref() {
+        let v = vector[1, 2, 3];
+        let i_s = 0;
+        let s = 0;
+        V::enumerate_ref(&v, |i, e| {
+            i_s = i_s + i;
+            s = s + *e;
+        });
+        assert!(i_s == 3, 0);
+        assert!(s == 6, 0);
+    }
+
+    #[test]
+    fun test_for_each_ref() {
+        let v = vector[1, 2, 3];
+        let s = 0;
+        V::for_each_ref(&v, |e| s = s + *e);
+        assert!(s == 6, 0)
+    }
+
+    #[test]
+    fun test_for_each_mut() {
+        let v = vector[1, 2, 3];
+        let s = 2;
+        V::for_each_mut(&mut v, |e| { *e = s; s = s + 1 });
+        assert!(v == vector[2, 3, 4], 0)
+    }
+
+    #[test]
+    fun test_zip_ref() {
+        let v1 = vector[1, 2, 3];
+        let v2 = vector[10, 20, 30];
+        let s = 0;
+        V::zip_ref(&v1, &v2, |e1, e2| s = s + *e1 * *e2);
+        assert!(s == 140, 0);
+    }
+
+    #[test]
+    // zip_ref is an inline function so any error code will be reported at the call site.
+    #[expected_failure(abort_code = V::EVECTORS_LENGTH_MISMATCH, location = Self)]
+    fun test_zip_ref_mismatching_lengths_should_fail() {
+        let v1 = vector[1];
+        let v2 = vector[10, 20];
+        let s = 0;
+        V::zip_ref(&v1, &v2, |e1, e2| s = s + *e1 * *e2);
+    }
+
+    #[test]
+    fun test_zip_mut() {
+        let v1 = vector[1, 2, 3];
+        let v2 = vector[10, 20, 30];
+        V::zip_mut(&mut v1, &mut v2, |e1, e2| {
+            let e1: &mut u64 = e1;
+            let e2: &mut u64 = e2;
+            *e1 = *e1 + 1;
+            *e2 = *e2 + 10;
+        });
+        assert!(v1 == vector[2, 3, 4], 0);
+        assert!(v2 == vector[20, 30, 40], 0);
+    }
+
+    #[test]
+    fun test_zip_map() {
+        let v1 = vector[1, 2, 3];
+        let v2 = vector[10, 20, 30];
+        let result = V::zip_map(v1, v2, |e1, e2| e1 + e2);
+        assert!(result == vector[11, 22, 33], 0);
+    }
+
+    #[test]
+    fun test_zip_map_ref() {
+        let v1 = vector[1, 2, 3];
+        let v2 = vector[10, 20, 30];
+        let result = V::zip_map_ref(&v1, &v2, |e1, e2| *e1 + *e2);
+        assert!(result == vector[11, 22, 33], 0);
+    }
+
+    #[test]
+    // zip_mut is an inline function so any error code will be reported at the call site.
+    #[expected_failure(abort_code = V::EVECTORS_LENGTH_MISMATCH, location = Self)]
+    fun test_zip_mut_mismatching_lengths_should_fail() {
+        let v1 = vector[1];
+        let v2 = vector[10, 20];
+        let s = 0;
+        V::zip_mut(&mut v1, &mut v2, |e1, e2| s = s + *e1 * *e2);
+    }
+
+    #[test]
+    // zip_map is an inline function so any error code will be reported at the call site.
+    #[expected_failure(abort_code = V::EVECTORS_LENGTH_MISMATCH, location = Self)]
+    fun test_zip_map_mismatching_lengths_should_fail() {
+        let v1 = vector[1];
+        let v2 = vector[10, 20];
+        V::zip_map(v1, v2, |e1, e2| e1 * e2);
+    }
+
+    #[test]
+    // zip_map_ref is an inline function so any error code will be reported at the call site.
+    #[expected_failure(abort_code = V::EVECTORS_LENGTH_MISMATCH, location = Self)]
+    fun test_zip_map_ref_mismatching_lengths_should_fail() {
+        let v1 = vector[1];
+        let v2 = vector[10, 20];
+        V::zip_map_ref(&v1, &v2, |e1, e2| *e1 * *e2);
+    }
+
+    #[test]
+    fun test_enumerate_mut() {
+        let v = vector[1, 2, 3];
+        let i_s = 0;
+        let s = 2;
+        V::enumerate_mut(&mut v, |i, e| {
+            i_s = i_s + i;
+            *e = s;
+            s = s + 1
+        });
+        assert!(i_s == 3, 0);
+        assert!(v == vector[2, 3, 4], 0);
+    }
+
+    #[test]
+    fun test_fold() {
+        let v = vector[1, 2, 3];
+        let s = V::fold(v, 0, |r, e| r + e);
+        assert!(s == 6 , 0)
+    }
+
+    #[test]
+    fun test_foldr() {
+        // use non-commutative minus operation to test the difference between fold and foldr
+        {
+            let v = vector[3, 2, 1];
+            // ((100 - 3) - 2) - 1 = 94
+            let s = V::fold(v, 100, |l, r| l - r);
+            assert!(s == 94, 0)
+        };
+        {
+            let v = vector[3, 2, 1];
+            // 3 - (2 - (1 - 0)) = 2
+            let s = V::foldr(v, 0, |l, r| l - r);
+            assert!(s == 2, 1)
+        }
+    }
+
+    #[test]
+    fun test_map() {
+        let v = vector[1, 2, 3];
+        let s = V::map(v, |x| x + 1);
+        assert!(s == vector[2, 3, 4] , 0)
+    }
+
+    #[test]
+    fun test_map_ref() {
+        let v = vector[1, 2, 3];
+        let s = V::map_ref(&v, |x| *x + 1);
+        assert!(s == vector[2, 3, 4] , 0)
+    }
+
+    #[test]
+    fun test_filter() {
+        let v = vector[1, 2, 3];
+        let s = V::filter(v, |x| *x % 2 == 0);
+        assert!(s == vector[2] , 0)
+    }
+
+    #[test]
+    fun test_any() {
+        let v = vector[1, 2, 3];
+        let r = V::any(&v, |x| *x > 2);
+        assert!(r, 0)
+    }
+
+    #[test]
+    fun test_all() {
+        let v = vector[1, 2, 3];
+        let r = V::all(&v, |x| *x >= 1);
+        assert!(r, 0)
+    }
+
+    #[test]
+    fun test_rotate() {
+        let v = vector[1, 2, 3, 4, 5];
+        assert!(vector::rotate(&mut v, 2) == 3, 0);
+        assert!(&v == &vector[3, 4, 5, 1, 2], 1);
+
+        assert!(vector::rotate_slice(&mut v, 1, 2, 5) == 4, 2);
+        assert!(&v == &vector[3, 5, 1, 2, 4], 3);
+
+        assert!(vector::rotate_slice(&mut v, 0, 0, 5) == 5, 2);
+        assert!(&v == &vector[3, 5, 1, 2, 4], 3);
+        assert!(vector::rotate_slice(&mut v, 0, 5, 5) == 0, 2);
+        assert!(&v == &vector[3, 5, 1, 2, 4], 3);
+    }
+
+    #[test]
+    fun test_partition() {
+        let v = vector[1, 2, 3, 4, 5];
+        assert!(vector::partition(&mut v, |n| *n % 2 == 0) == 2, 0);
+        assert!(&v == &vector[2, 4, 3, 1, 5], 1);
+
+        assert!(vector::partition(&mut v, |_n| false) == 0, 0);
+        assert!(&v == &vector[2, 4, 3, 1, 5], 1);
+
+        assert!(vector::partition(&mut v, |_n| true) == 5, 0);
+        assert!(&v == &vector[2, 4, 3, 1, 5], 1);
+    }
+
+    fun test_stable_partition() {
+        let v:vector<u64> = vector[1, 2, 3, 4, 5];
+
+        assert!(vector::stable_partition(&mut v, |n| *n % 2 == 0) == 2, 0);
+        assert!(&v == &vector[2, 4, 1, 3, 5], 1);
+
+        assert!(vector::partition(&mut v, |_n| false) == 0, 0);
+        assert!(&v == &vector[2, 4, 1, 3, 5], 1);
+
+        assert!(vector::partition(&mut v, |_n| true) == 5, 0);
+        assert!(&v == &vector[2, 4, 1, 3, 5], 1);
+    }
+
+    fun test_insert() {
+        let v:vector<u64> = vector[1, 2, 3, 4, 5];
+
+        vector::insert(&mut v,2, 6);
+        assert!(&v == &vector[1, 2, 6, 3, 4, 5], 1);
+
+        vector::insert(&mut v,6, 7);
+        assert!(&v == &vector[1, 2, 6, 3, 4, 5, 7], 1);
+    }
+
+    #[test]
+    #[expected_failure(abort_code = V::EINDEX_OUT_OF_BOUNDS)]
+    fun test_insert_out_of_bounds() {
+        let v:vector<u64> = vector[1, 2, 3, 4, 5];
+
+        vector::insert(&mut v,6, 6);
+    }
+
+    #[test_only]
+    struct MoveOnly {}
+
+    #[test]
+    fun test_destroy() {
+        let v = vector[MoveOnly {}];
+        vector::destroy(v, |m| { let MoveOnly {} = m; })
     }
 }

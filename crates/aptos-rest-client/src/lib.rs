@@ -1,4 +1,5 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 extern crate core;
@@ -9,24 +10,25 @@ pub mod faucet;
 pub use faucet::FaucetClient;
 pub mod response;
 pub use response::Response;
+pub mod client_builder;
 pub mod state;
 pub mod types;
 
+pub use crate::client_builder::{AptosBaseUrl, ClientBuilder};
+use crate::{
+    aptos::{AptosVersion, Balance},
+    error::RestError,
+};
+use anyhow::{anyhow, Result};
 pub use aptos_api_types::{
     self, IndexResponseBcs, MoveModuleBytecode, PendingTransaction, Transaction,
 };
-pub use state::State;
-pub use types::{deserialize_from_prefixed_hex_string, Account, Resource};
-
-use crate::aptos::{AptosVersion, Balance};
-use crate::error::RestError;
-use anyhow::{anyhow, Result};
 use aptos_api_types::{
     deserialize_from_string,
-    mime_types::{BCS, BCS_SIGNED_TRANSACTION as BCS_CONTENT_TYPE},
-    AptosError, BcsBlock, Block, Bytecode, ExplainVMStatus, GasEstimation, HexEncodedBytes,
-    IndexResponse, MoveModuleId, TransactionData, TransactionOnChainData,
-    TransactionsBatchSubmissionResult, UserTransaction, VersionedEvent,
+    mime_types::{BCS, BCS_SIGNED_TRANSACTION as BCS_CONTENT_TYPE, JSON},
+    AptosError, BcsBlock, Block, GasEstimation, HexEncodedBytes, IndexResponse, MoveModuleId,
+    TransactionData, TransactionOnChainData, TransactionsBatchSubmissionResult, UserTransaction,
+    VersionedEvent, ViewRequest,
 };
 use aptos_crypto::HashValue;
 use aptos_logger::{debug, info, sample, sample::SampleRate};
@@ -34,23 +36,22 @@ use aptos_types::{
     account_address::AccountAddress,
     account_config::{AccountResource, CoinStoreResource, NewBlockEvent, CORE_CODE_ADDRESS},
     contract_event::EventWithVersion,
+    state_store::state_key::StateKey,
     transaction::SignedTransaction,
 };
-use futures::executor::block_on;
-use move_binary_format::CompiledModule;
-use move_core_types::language_storage::{ModuleId, StructTag};
-use reqwest::header::ACCEPT;
-use reqwest::{header::CONTENT_TYPE, Client as ReqwestClient, StatusCode};
+use move_core_types::language_storage::StructTag;
+use reqwest::{
+    header::{ACCEPT, CONTENT_TYPE},
+    Client as ReqwestClient, StatusCode,
+};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
-use std::future::Future;
-use std::rc::Rc;
-use std::time::Duration;
+pub use state::State;
+use std::{collections::BTreeMap, future::Future, time::Duration};
 use tokio::time::Instant;
+pub use types::{deserialize_from_prefixed_hex_string, Account, Resource};
 use url::Url;
 
-pub const USER_AGENT: &str = concat!("aptos-client-sdk-rust / ", env!("CARGO_PKG_VERSION"));
 pub const DEFAULT_VERSION_PATH_BASE: &str = "v1/";
 const DEFAULT_MAX_WAIT_MS: u64 = 60000;
 const DEFAULT_INTERVAL_MS: u64 = 1000;
@@ -59,6 +60,7 @@ static DEFAULT_INTERVAL_DURATION: Duration = Duration::from_millis(DEFAULT_INTER
 const DEFAULT_MAX_SERVER_LAG_WAIT_DURATION: Duration = Duration::from_secs(60);
 const RESOURCES_PER_CALL_PAGINATION: u64 = 9999;
 const MODULES_PER_CALL_PAGINATION: u64 = 1000;
+const X_APTOS_SDK_HEADER_VALUE: &str = concat!("aptos-rust-sdk/", env!("CARGO_PKG_VERSION"));
 
 type AptosResult<T> = Result<T, RestError>;
 
@@ -70,37 +72,12 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new_with_timeout(base_url: Url, timeout: Duration) -> Self {
-        let inner = ReqwestClient::builder()
-            .timeout(timeout)
-            .user_agent(USER_AGENT)
-            .cookie_store(true)
-            .build()
-            .unwrap();
-
-        // If the user provided no version in the path, use the default. If the
-        // provided version has no trailing slash, add it, otherwise url.join
-        // will ignore the version path base.
-        let version_path_base = match base_url.path() {
-            "/" => DEFAULT_VERSION_PATH_BASE.to_string(),
-            path => {
-                if !path.ends_with('/') {
-                    format!("{}/", path)
-                } else {
-                    path.to_string()
-                }
-            }
-        };
-
-        Self {
-            inner,
-            base_url,
-            version_path_base,
-        }
+    pub fn builder(aptos_base_url: AptosBaseUrl) -> ClientBuilder {
+        ClientBuilder::new(aptos_base_url)
     }
 
     pub fn new(base_url: Url) -> Self {
-        Self::new_with_timeout(base_url, Duration::from_secs(10))
+        Self::builder(AptosBaseUrl::Custom(base_url)).build()
     }
 
     pub fn path_prefix_string(&self) -> String {
@@ -120,7 +97,7 @@ impl Client {
         Ok(self)
     }
 
-    fn build_path(&self, path: &str) -> AptosResult<Url> {
+    pub fn build_path(&self, path: &str) -> AptosResult<Url> {
         Ok(self.base_url.join(&self.version_path_base)?.join(path)?)
     }
 
@@ -308,12 +285,58 @@ impl Client {
         Ok(response)
     }
 
+    pub async fn view(
+        &self,
+        request: &ViewRequest,
+        version: Option<u64>,
+    ) -> AptosResult<Response<Vec<serde_json::Value>>> {
+        let request = serde_json::to_string(request)?;
+        let mut url = self.build_path("view")?;
+        if let Some(version) = version {
+            url.set_query(Some(format!("ledger_version={}", version).as_str()));
+        }
+
+        let response = self
+            .inner
+            .post(url)
+            .header(CONTENT_TYPE, JSON)
+            .body(request)
+            .send()
+            .await?;
+
+        self.json(response).await
+    }
+
     pub async fn simulate(
         &self,
         txn: &SignedTransaction,
     ) -> AptosResult<Response<Vec<UserTransaction>>> {
         let txn_payload = bcs::to_bytes(txn)?;
         let url = self.build_path("transactions/simulate")?;
+
+        let response = self
+            .inner
+            .post(url)
+            .header(CONTENT_TYPE, BCS_CONTENT_TYPE)
+            .body(txn_payload)
+            .send()
+            .await?;
+
+        self.json(response).await
+    }
+
+    pub async fn simulate_with_gas_estimation(
+        &self,
+        txn: &SignedTransaction,
+        estimate_max_gas_amount: bool,
+        estimate_max_gas_unit_price: bool,
+    ) -> AptosResult<Response<Vec<UserTransaction>>> {
+        let txn_payload = bcs::to_bytes(txn)?;
+
+        let url = self.build_path(&format!(
+            "transactions/simulate?estimate_max_gas_amount={}&estimate_gas_unit_price={}",
+            estimate_max_gas_amount, estimate_max_gas_unit_price
+        ))?;
 
         let response = self
             .inner
@@ -422,6 +445,7 @@ impl Client {
             .await?;
         self.json(response).await
     }
+
     pub async fn submit_batch_bcs(
         &self,
         txns: &[SignedTransaction],
@@ -547,24 +571,24 @@ impl Client {
         let start = std::time::Instant::now();
         loop {
             let mut chain_timestamp_usecs = None;
-            match fetch(hash).await? {
-                WaitForTransactionResult::Success(result) => {
+            match fetch(hash).await {
+                Ok(WaitForTransactionResult::Success(result)) => {
                     return Ok(result);
-                }
-                WaitForTransactionResult::FailedExecution(vm_status) => {
+                },
+                Ok(WaitForTransactionResult::FailedExecution(vm_status)) => {
                     return Err(anyhow!(
                         "Transaction committed on chain, but failed execution: {}",
                         vm_status
                     ))?;
-                }
-                WaitForTransactionResult::Pending(state) => {
+                },
+                Ok(WaitForTransactionResult::Pending(state)) => {
                     reached_mempool = true;
                     if expiration_timestamp_secs <= state.timestamp_usecs / 1_000_000 {
                         return Err(anyhow!("Transaction expired. It is guaranteed it will not be committed on chain.").into());
                     }
                     chain_timestamp_usecs = Some(state.timestamp_usecs);
-                }
-                WaitForTransactionResult::NotFound(error) => {
+                },
+                Ok(WaitForTransactionResult::NotFound(error)) => {
                     if let RestError::Api(aptos_error_response) = error {
                         if let Some(state) = aptos_error_response.state {
                             if expiration_timestamp_secs <= state.timestamp_usecs / 1_000_000 {
@@ -596,7 +620,10 @@ impl Client {
                             self.path_prefix_string(),
                         )
                     );
-                }
+                },
+                Err(err) => {
+                    debug!("Fetching error, will retry: {}", err);
+                },
             }
 
             if let Some(max_server_lag_wait_duration) = max_server_lag_wait {
@@ -1005,6 +1032,17 @@ impl Client {
         Ok(response.map(|inner| inner.to_vec()))
     }
 
+    pub async fn get_account_resource_bytes(
+        &self,
+        address: AccountAddress,
+        resource_type: &str,
+    ) -> AptosResult<Response<Vec<u8>>> {
+        let url = self.build_path(&format!("accounts/{}/resource/{}", address, resource_type))?;
+
+        let response = self.get_bcs(url).await?;
+        Ok(response.map(|inner| inner.to_vec()))
+    }
+
     pub async fn get_account_resource_at_version(
         &self,
         address: AccountAddress,
@@ -1059,6 +1097,19 @@ impl Client {
         module_name: &str,
     ) -> AptosResult<Response<bytes::Bytes>> {
         let url = self.build_path(&format!("accounts/{}/module/{}", address, module_name))?;
+        self.get_bcs(url).await
+    }
+
+    pub async fn get_account_module_bcs_at_version(
+        &self,
+        address: AccountAddress,
+        module_name: &str,
+        version: u64,
+    ) -> AptosResult<Response<bytes::Bytes>> {
+        let url = self.build_path(&format!(
+            "accounts/{}/module/{}?ledger_version={}",
+            address, module_name, version
+        ))?;
         self.get_bcs(url).await
     }
 
@@ -1206,6 +1257,23 @@ impl Client {
         ))?;
         let data = json!({
             "key": hex::encode(key),
+        });
+
+        let response = self.post_bcs(url, data).await?;
+        Ok(response.map(|inner| inner.to_vec()))
+    }
+
+    pub async fn get_raw_state_value(
+        &self,
+        state_key: &StateKey,
+        version: u64,
+    ) -> AptosResult<Response<Vec<u8>>> {
+        let url = self.build_path(&format!(
+            "experimental/state_values/raw?ledger_version={}",
+            version
+        ))?;
+        let data = json!({
+            "key": hex::encode(bcs::to_bytes(state_key)?),
         });
 
         let response = self.post_bcs(url, data).await?;
@@ -1366,7 +1434,7 @@ impl Client {
                 Err(err) => match err {
                     RestError::Api(inner) => {
                         should_retry(inner.status_code, Some(inner.error.clone()))
-                    }
+                    },
                     RestError::Http(status_code, _e) => should_retry(*status_code, None),
                     RestError::Bcs(_)
                     | RestError::Json(_)
@@ -1484,6 +1552,22 @@ impl Client {
     }
 }
 
+// If the user provided no version in the path, use the default. If the
+// provided version has no trailing slash, add it, otherwise url.join
+// will ignore the version path base.
+pub fn get_version_path_with_base(base_url: Url) -> String {
+    match base_url.path() {
+        "/" => DEFAULT_VERSION_PATH_BASE.to_string(),
+        path => {
+            if !path.ends_with('/') {
+                format!("{}/", path)
+            } else {
+                path.to_string()
+            }
+        },
+    }
+}
+
 pub fn retriable_with_404(status_code: StatusCode, aptos_error: Option<AptosError>) -> bool {
     retriable(status_code, aptos_error) | matches!(status_code, StatusCode::NOT_FOUND)
 }
@@ -1549,16 +1633,4 @@ enum WaitForTransactionResult<T> {
     FailedExecution(String),
     Pending(State),
     Success(Response<T>),
-}
-
-impl ExplainVMStatus for Client {
-    // TODO: Add some caching
-    fn get_module_bytecode(&self, module_id: &ModuleId) -> Result<Rc<dyn Bytecode>> {
-        let bytes =
-            block_on(self.get_account_module_bcs(*module_id.address(), module_id.name().as_str()))?
-                .into_inner();
-
-        let compiled_module = CompiledModule::deserialize(bytes.as_ref())?;
-        Ok(Rc::new(compiled_module) as Rc<dyn Bytecode>)
-    }
 }

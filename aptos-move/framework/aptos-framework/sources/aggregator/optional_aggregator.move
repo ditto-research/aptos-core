@@ -8,6 +8,7 @@ module aptos_framework::optional_aggregator {
     use aptos_framework::aggregator::{Self, Aggregator};
 
     friend aptos_framework::coin;
+    friend aptos_framework::fungible_asset;
 
     /// The value of aggregator underflows (goes below zero). Raised by native code.
     const EAGGREGATOR_OVERFLOW: u64 = 1;
@@ -242,7 +243,7 @@ module aptos_framework::optional_aggregator {
     }
 
     #[test(account = @aptos_framework)]
-    #[expected_failure(abort_code = 0x020001)]
+    #[expected_failure(abort_code = 0x020001, location = Self)]
     fun non_parallelizable_aggregator_overflow_test(account: signer) {
         aggregator_factory::initialize_aggregator_factory(&account);
         let aggregator = new(15, false);
@@ -254,7 +255,7 @@ module aptos_framework::optional_aggregator {
     }
 
     #[test(account = @aptos_framework)]
-    #[expected_failure(abort_code = 0x020002)]
+    #[expected_failure(abort_code = 0x020002, location = Self)]
     fun non_parallelizable_aggregator_underflow_test(account: signer) {
         aggregator_factory::initialize_aggregator_factory(&account);
         let aggregator = new(100, false);
@@ -267,7 +268,7 @@ module aptos_framework::optional_aggregator {
     }
 
     #[test(account = @aptos_framework)]
-    #[expected_failure(abort_code = 0x020001)]
+    #[expected_failure(abort_code = 0x020001, location = aptos_framework::aggregator)]
     fun parallelizable_aggregator_overflow_test(account: signer) {
         aggregator_factory::initialize_aggregator_factory(&account);
         let aggregator = new(15, true);
@@ -279,7 +280,7 @@ module aptos_framework::optional_aggregator {
     }
 
     #[test(account = @aptos_framework)]
-    #[expected_failure(abort_code = 0x020002)]
+    #[expected_failure(abort_code = 0x020002, location = aptos_framework::aggregator)]
     fun parallelizable_aggregator_underflow_test(account: signer) {
         aggregator_factory::initialize_aggregator_factory(&account);
         let aggregator = new(100, true);

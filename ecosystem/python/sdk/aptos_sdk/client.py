@@ -1,4 +1,4 @@
-# Copyright (c) Aptos
+# Copyright © Aptos Foundation
 # SPDX-License-Identifier: Apache-2.0
 
 import time
@@ -9,12 +9,17 @@ import httpx
 from . import ed25519
 from .account import Account
 from .account_address import AccountAddress
-from .authenticator import (Authenticator, Ed25519Authenticator,
-                            MultiAgentAuthenticator)
+from .authenticator import Authenticator, Ed25519Authenticator, MultiAgentAuthenticator
 from .bcs import Serializer
-from .transactions import (EntryFunction, MultiAgentRawTransaction,
-                           RawTransaction, SignedTransaction,
-                           TransactionArgument, TransactionPayload)
+from .metadata import Metadata
+from .transactions import (
+    EntryFunction,
+    MultiAgentRawTransaction,
+    RawTransaction,
+    SignedTransaction,
+    TransactionArgument,
+    TransactionPayload,
+)
 from .type_tag import StructTag, TypeTag
 
 U64_MAX = 18446744073709551615
@@ -40,6 +45,7 @@ class RestClient:
     def __init__(self, base_url: str, client_config: ClientConfig = ClientConfig()):
         self.base_url = base_url
         self.client = httpx.Client()
+        self.client.headers[Metadata.APTOS_HEADER] = Metadata.get_aptos_header_val()
         self.client_config = client_config
         self.chain_id = int(self.info()["chain_id"])
 
@@ -50,42 +56,74 @@ class RestClient:
     # Account accessors
     #
 
-    def account(self, account_address: AccountAddress) -> Dict[str, str]:
+    def account(
+        self, account_address: AccountAddress, ledger_version: int = None
+    ) -> Dict[str, str]:
         """Returns the sequence number and authentication key for an account"""
 
-        response = self.client.get(f"{self.base_url}/accounts/{account_address}")
+        if not ledger_version:
+            request = f"{self.base_url}/accounts/{account_address}"
+        else:
+            request = f"{self.base_url}/accounts/{account_address}?ledger_version={ledger_version}"
+
+        response = self.client.get(request)
         if response.status_code >= 400:
             raise ApiError(f"{response.text} - {account_address}", response.status_code)
         return response.json()
 
-    def account_balance(self, account_address: AccountAddress) -> int:
+    def account_balance(
+        self, account_address: AccountAddress, ledger_version: int = None
+    ) -> int:
         """Returns the test coin balance associated with the account"""
         resource = self.account_resource(
-            account_address, "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>"
+            account_address,
+            "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>",
+            ledger_version,
         )
         return resource["data"]["coin"]["value"]
 
-    def account_sequence_number(self, account_address: AccountAddress) -> int:
-        account_res = self.account(account_address)
+    def account_sequence_number(
+        self, account_address: AccountAddress, ledger_version: int = None
+    ) -> int:
+        account_res = self.account(account_address, ledger_version)
         return int(account_res["sequence_number"])
 
     def account_resource(
-        self, account_address: AccountAddress, resource_type: str
+        self,
+        account_address: AccountAddress,
+        resource_type: str,
+        ledger_version: int = None,
     ) -> Dict[str, Any]:
-        response = self.client.get(
-            f"{self.base_url}/accounts/{account_address}/resource/{resource_type}"
-        )
+        if not ledger_version:
+            request = (
+                f"{self.base_url}/accounts/{account_address}/resource/{resource_type}"
+            )
+        else:
+            request = f"{self.base_url}/accounts/{account_address}/resource/{resource_type}?ledger_version={ledger_version}"
+
+        response = self.client.get(request)
         if response.status_code == 404:
-            return None
+            raise ResourceNotFound(resource_type, resource_type)
         if response.status_code >= 400:
             raise ApiError(f"{response.text} - {account_address}", response.status_code)
         return response.json()
 
     def get_table_item(
-        self, handle: str, key_type: str, value_type: str, key: Any
+        self,
+        handle: str,
+        key_type: str,
+        value_type: str,
+        key: Any,
+        ledger_version: int = None,
     ) -> Any:
+        if not ledger_version:
+            request = f"{self.base_url}/tables/{handle}/item"
+        else:
+            request = (
+                f"{self.base_url}/tables/{handle}/item?ledger_version={ledger_version}"
+            )
         response = self.client.post(
-            f"{self.base_url}/tables/{handle}/item",
+            request,
             json={
                 "key_type": key_type,
                 "value_type": value_type,
@@ -95,6 +133,46 @@ class RestClient:
         if response.status_code >= 400:
             raise ApiError(response.text, response.status_code)
         return response.json()
+
+    def aggregator_value(
+        self,
+        account_address: AccountAddress,
+        resource_type: str,
+        aggregator_path: List[str],
+    ) -> int:
+        source_data = self.account_resource(account_address, resource_type)["data"]
+        data = source_data
+
+        while len(aggregator_path) > 0:
+            key = aggregator_path.pop()
+            if key not in data:
+                raise ApiError(
+                    f"aggregator path not found in data: {source_data}", source_data
+                )
+            data = data[key]
+
+        if "vec" not in data:
+            raise ApiError(f"aggregator not found in data: {source_data}", source_data)
+        data = data["vec"]
+        if len(data) != 1:
+            raise ApiError(f"aggregator not found in data: {source_data}", source_data)
+        data = data[0]
+        if "aggregator" not in data:
+            raise ApiError(f"aggregator not found in data: {source_data}", source_data)
+        data = data["aggregator"]
+        if "vec" not in data:
+            raise ApiError(f"aggregator not found in data: {source_data}", source_data)
+        data = data["vec"]
+        if len(data) != 1:
+            raise ApiError(f"aggregator not found in data: {source_data}", source_data)
+        data = data[0]
+        if "handle" not in data:
+            raise ApiError(f"aggregator not found in data: {source_data}", source_data)
+        if "key" not in data:
+            raise ApiError(f"aggregator not found in data: {source_data}", source_data)
+        handle = data["handle"]
+        key = data["key"]
+        return int(self.get_table_item(handle, "address", "u128", key))
 
     #
     # Ledger accessors
@@ -204,7 +282,9 @@ class RestClient:
 
         count = 0
         while self.transaction_pending(txn_hash):
-            assert count < self.client_config.transaction_wait_in_seconds, f"transaction {txn_hash} timed out"
+            assert (
+                count < self.client_config.transaction_wait_in_seconds
+            ), f"transaction {txn_hash} timed out"
             time.sleep(1)
             count += 1
         response = self.client.get(f"{self.base_url}/transactions/by_hash/{txn_hash}")
@@ -289,7 +369,7 @@ class RestClient:
 
         payload = {
             "type": "entry_function_payload",
-            "function": "0x1::coin::transfer",
+            "function": "0x1::aptos_account::transfer_coins",
             "type_arguments": ["0x1::aptos_coin::AptosCoin"],
             "arguments": [
                 f"{recipient}",
@@ -308,8 +388,8 @@ class RestClient:
         ]
 
         payload = EntryFunction.natural(
-            "0x1::coin",
-            "transfer",
+            "0x1::aptos_account",
+            "transfer_coins",
             [TypeTag(StructTag.from_str("0x1::aptos_coin::AptosCoin"))],
             transaction_arguments,
         )
@@ -626,9 +706,18 @@ class FaucetClient:
 
 
 class ApiError(Exception):
-    """Error thrown when the API returns >= 400"""
+    """The API returned a non-success status code, e.g., >= 400"""
 
-    def __init__(self, message, status_code):
+    def __init__(self, message: str, status_code: int):
         # Call the base class constructor with the parameters it needs
         super().__init__(message)
         self.status_code = status_code
+
+
+class ResourceNotFound(Exception):
+    """The underlying resource was not found"""
+
+    def __init__(self, message: str, resource: str):
+        # Call the base class constructor with the parameters it needs
+        super().__init__(message)
+        self.resource = resource

@@ -72,13 +72,11 @@ This project follows [semver](https://semver.org/) as closely as possible.
 To release a new version of the SDK do the following.
 
 1. Regenerate the client:
-
 ```
 pnpm generate-client
 ```
 
 2. Test:
-
 ```
 pnpm test
 ```
@@ -95,4 +93,4 @@ pnpm test
 [npm-image-downloads]: https://img.shields.io/npm/dm/aptos.svg
 [npm-url]: https://npmjs.org/package/aptos-node-checker-client
 [discord-image]: https://img.shields.io/discord/945856774056083548?label=Discord&logo=discord&style=flat~~~~
-[discord-url]: https://discord.gg/aptoslabs
+[discord-url]: https://discord.gg/aptosnetwork

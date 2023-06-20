@@ -1,4 +1,5 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 use super::leader_reputation::{
@@ -15,6 +16,7 @@ use aptos_consensus_types::common::{Author, Round};
 use aptos_crypto::{bls12381, HashValue};
 use aptos_infallible::Mutex;
 use aptos_keygen::KeyGen;
+use aptos_storage_interface::{DbReader, Order};
 use aptos_types::{
     account_address::AccountAddress,
     account_config::{new_block_event_key, NewBlockEvent},
@@ -29,13 +31,12 @@ use itertools::Itertools;
 use move_core_types::{language_storage::TypeTag, move_resource::MoveStructType};
 use num_traits::Pow;
 use std::{collections::HashMap, sync::Arc};
-use storage_interface::{DbReader, Order};
 
 /// #### NewBlockEventAggregation tests ####
 
 #[test]
 fn test_aggregation_bitmap_to_voters() {
-    let validators: Vec<_> = (0..4).into_iter().map(|_| Author::random()).collect();
+    let validators: Vec<_> = (0..4).map(|_| Author::random()).collect();
     let bitmap = vec![true, true, false, true];
 
     if let Ok(voters) = NewBlockEventAggregation::bitvec_to_voters(&validators, &bitmap.into()) {
@@ -50,7 +51,6 @@ fn test_aggregation_bitmap_to_voters() {
 #[test]
 fn test_aggregation_bitmap_to_voters_mismatched_lengths() {
     let validators: Vec<_> = (0..8) // size of 8 with one u8 in bitvec
-        .into_iter()
         .map(|_| Author::random())
         .collect();
     let bitmap_too_long = vec![true; 9]; // 2 bytes in bitvec
@@ -65,7 +65,7 @@ fn test_aggregation_bitmap_to_voters_mismatched_lengths() {
 
 #[test]
 fn test_aggregation_indices_to_authors() {
-    let validators: Vec<_> = (0..4).into_iter().map(|_| Author::random()).collect();
+    let validators: Vec<_> = (0..4).map(|_| Author::random()).collect();
     let indices = vec![2u64, 2, 0, 3];
 
     if let Ok(authors) = NewBlockEventAggregation::indices_to_validators(&validators, &indices) {
@@ -80,7 +80,7 @@ fn test_aggregation_indices_to_authors() {
 
 #[test]
 fn test_aggregation_indices_to_authors_out_of_index() {
-    let validators: Vec<_> = (0..4).into_iter().map(|_| Author::random()).collect();
+    let validators: Vec<_> = (0..4).map(|_| Author::random()).collect();
     let indices = vec![0, 0, 4, 0];
     assert!(NewBlockEventAggregation::indices_to_validators(&validators, &indices).is_err());
 }
@@ -94,8 +94,7 @@ struct Example1 {
 
 impl Example1 {
     fn new(window_size: usize) -> Self {
-        let mut sorted_validators: Vec<Author> =
-            (0..5).into_iter().map(|_| Author::random()).collect();
+        let mut sorted_validators: Vec<Author> = (0..5).map(|_| Author::random()).collect();
         sorted_validators.sort();
         // same first 3 validators, different 4th validator (index 3).
         let mut validators0: Vec<Author> = sorted_validators[..3].to_vec();

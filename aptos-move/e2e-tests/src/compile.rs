@@ -1,12 +1,12 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 //! Support for compiling scripts and modules in tests.
 
-use move_ir_compiler::Compiler;
-
 use aptos_types::transaction::{Module, Script};
 use move_binary_format::CompiledModule;
+use move_ir_compiler::Compiler;
 
 /// Compile the provided Move code into a blob which can be used as the code to be published
 /// (a Module).

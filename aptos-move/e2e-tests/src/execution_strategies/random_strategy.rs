@@ -1,4 +1,5 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 #![forbid(unsafe_code)]
@@ -12,7 +13,7 @@ use rand::{
     Rng, SeedableRng,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RandomizedStrategy {
     gen: StdRng,
 }
@@ -33,6 +34,7 @@ impl RandomizedStrategy {
 
 impl PartitionStrategy for RandomizedStrategy {
     type Txn = SignedTransaction;
+
     fn partition(&mut self, mut block: Block<Self::Txn>) -> Vec<Block<SignedTransaction>> {
         let mut blocks = vec![];
         while !block.is_empty() {
@@ -44,7 +46,6 @@ impl PartitionStrategy for RandomizedStrategy {
     }
 }
 
-#[derive(Debug)]
 pub struct RandomExecutor {
     strategy: RandomizedStrategy,
     executor: FakeExecutor,
@@ -64,8 +65,9 @@ impl RandomExecutor {
 }
 
 impl Executor for RandomExecutor {
-    type Txn = SignedTransaction;
     type BlockResult = VMStatus;
+    type Txn = SignedTransaction;
+
     fn execute_block(&mut self, block: Block<Self::Txn>) -> ExecutorResult<Self::BlockResult> {
         let blocks = self.strategy.partition(block);
         let mut results = vec![];

@@ -1,18 +1,18 @@
-/**
- * Simple module for tracking and calculating shares of a pool of coins. The shares are worth more as the total coins in
- * the pool increases. New shareholder can buy more shares or redeem their existing shares.
- *
- * Example flow:
- * 1. Pool start outs empty.
- * 2. Shareholder A buys in with 1000 coins. A will receive 1000 shares in the pool. Pool now has 1000 total coins and
- * 1000 total shares.
- * 3. Pool appreciates in value from rewards and now has 2000 coins. A's 1000 shares are now worth 2000 coins.
- * 4. Shareholder B now buys in with 1000 coins. Since before the buy in, each existing share is worth 2 coins, B will
- * receive 500 shares in exchange for 1000 coins. Pool now has 1500 shares and 3000 coins.
- * 5. Pool appreciates in value from rewards and now has 6000 coins.
- * 6. A redeems 500 shares. Each share is worth 6000 / 1500 = 4. A receives 2000 coins. Pool has 4000 coins and 1000
- * shares left.
- */
+///
+/// Simple module for tracking and calculating shares of a pool of coins. The shares are worth more as the total coins in
+/// the pool increases. New shareholder can buy more shares or redeem their existing shares.
+///
+/// Example flow:
+/// 1. Pool start outs empty.
+/// 2. Shareholder A buys in with 1000 coins. A will receive 1000 shares in the pool. Pool now has 1000 total coins and
+/// 1000 total shares.
+/// 3. Pool appreciates in value from rewards and now has 2000 coins. A's 1000 shares are now worth 2000 coins.
+/// 4. Shareholder B now buys in with 1000 coins. Since before the buy in, each existing share is worth 2 coins, B will
+/// receive 500 shares in exchange for 1000 coins. Pool now has 1500 shares and 3000 coins.
+/// 5. Pool appreciates in value from rewards and now has 6000 coins.
+/// 6. A redeems 500 shares. Each share is worth 6000 / 1500 = 4. A receives 2000 coins. Pool has 4000 coins and 1000
+/// shares left.
+///
 module aptos_std::pool_u64 {
     use aptos_std::simple_map::{Self, SimpleMap};
     use std::error;
@@ -327,7 +327,7 @@ module aptos_std::pool_u64 {
     }
 
     #[test]
-    #[expected_failure(abort_code = 196611)]
+    #[expected_failure(abort_code = 196611, location = Self)]
     public entry fun test_destroy_empty_should_fail_if_not_empty() {
         let pool = create(1);
         update_total_coins(&mut pool, 100);
@@ -428,7 +428,7 @@ module aptos_std::pool_u64 {
     }
 
     #[test]
-    #[expected_failure(abort_code = 196610)]
+    #[expected_failure(abort_code = 196610, location = Self)]
     public entry fun test_add_shares_should_enforce_shareholder_limit() {
         let pool = create(2);
         add_shares(&mut pool, @1, 1);
@@ -449,7 +449,7 @@ module aptos_std::pool_u64 {
     }
 
     #[test]
-    #[expected_failure(abort_code = 65537)]
+    #[expected_failure(abort_code = 65537, location = Self)]
     public entry fun test_redeem_shares_non_existent_shareholder() {
         let pool = create(1);
         add_shares(&mut pool, @1, 1);
@@ -458,7 +458,7 @@ module aptos_std::pool_u64 {
     }
 
     #[test]
-    #[expected_failure(abort_code = 65540)]
+    #[expected_failure(abort_code = 65540, location = Self)]
     public entry fun test_redeem_shares_insufficient_shares() {
         let pool = create(1);
         add_shares(&mut pool, @1, 1);
@@ -488,7 +488,7 @@ module aptos_std::pool_u64 {
     }
 
     #[test]
-    #[expected_failure(abort_code = 65537)]
+    #[expected_failure(abort_code = 65537, location = Self)]
     public entry fun test_deduct_shares_non_existent_shareholder() {
         let pool = create(1);
         add_shares(&mut pool, @1, 1);
@@ -497,7 +497,7 @@ module aptos_std::pool_u64 {
     }
 
     #[test]
-    #[expected_failure(abort_code = 65540)]
+    #[expected_failure(abort_code = 65540, location = Self)]
     public entry fun test_deduct_shares_insufficient_shares() {
         let pool = create(1);
         add_shares(&mut pool, @1, 1);

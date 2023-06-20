@@ -1,7 +1,7 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::utils::ReplayConcurrencyLevelOpt;
 use crate::{
     backup_types::state_snapshot::{
         backup::{StateSnapshotBackupController, StateSnapshotBackupOpt},
@@ -11,13 +11,14 @@ use crate::{
     utils::{
         backup_service_client::BackupServiceClient,
         test_utils::{start_local_backup_service, tmp_db_with_random_content},
-        ConcurrentDownloadsOpt, GlobalBackupOpt, GlobalRestoreOpt, RocksdbOpt, TrustedWaypointOpt,
+        ConcurrentDownloadsOpt, GlobalBackupOpt, GlobalRestoreOpt, ReplayConcurrencyLevelOpt,
+        RocksdbOpt, TrustedWaypointOpt,
     },
 };
+use aptos_db::{state_restore::StateSnapshotRestoreMode, AptosDB};
+use aptos_storage_interface::DbReader;
 use aptos_temppath::TempPath;
-use aptosdb::AptosDB;
 use std::{convert::TryInto, sync::Arc};
-use storage_interface::DbReader;
 use tokio::time::Duration;
 
 #[test]
@@ -77,6 +78,7 @@ fn end_to_end() {
                 manifest_handle,
                 version,
                 validate_modules: false,
+                restore_mode: StateSnapshotRestoreMode::Default,
             },
             GlobalRestoreOpt {
                 dry_run: false,

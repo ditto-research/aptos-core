@@ -1,12 +1,13 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{Result, Version};
 use anyhow::anyhow;
 use aptos_config::{config::NodeConfig, network_id::NetworkId};
-use aptos_rest_client::Client as RestClient;
+use aptos_inspection_service::inspection_client::InspectionClient;
+use aptos_rest_client::{AptosBaseUrl, Client as RestClient};
 use aptos_sdk::types::PeerId;
-use inspection_service::inspection_client::InspectionClient;
 use std::{
     collections::HashMap,
     time::{Duration, Instant},
@@ -143,12 +144,14 @@ pub trait NodeExt: Node {
 
     /// Return REST API client of this Node
     fn rest_client_with_timeout(&self, timeout: Duration) -> RestClient {
-        RestClient::new_with_timeout(self.rest_api_endpoint(), timeout)
+        RestClient::builder(AptosBaseUrl::Custom(self.rest_api_endpoint()))
+            .timeout(timeout)
+            .build()
     }
 
     /// Return an InspectionClient for this Node
     fn inspection_client(&self) -> InspectionClient {
-        InspectionClient::from_url(self.inspection_service_endpoint())
+        InspectionClient::new(self.inspection_service_endpoint())
     }
 
     /// Restarts this Node by calling Node::Stop followed by Node::Start
@@ -214,8 +217,10 @@ pub trait NodeExt: Node {
     }
 
     async fn wait_until_healthy(&mut self, deadline: Instant) -> Result<()> {
+        let mut healthcheck_error =
+            HealthCheckError::Unknown(anyhow::anyhow!("No healthcheck performed yet"));
         while Instant::now() < deadline {
-            match self.health_check().await {
+            healthcheck_error = match self.health_check().await {
                 Ok(()) => return Ok(()),
                 Err(HealthCheckError::NotRunning(error)) => {
                     return Err(anyhow::anyhow!(
@@ -224,17 +229,18 @@ pub trait NodeExt: Node {
                         self.peer_id(),
                         error,
                     ))
-                }
-                Err(_) => {} // For other errors we'll retry
-            }
+                },
+                Err(e) => e, // For other errors we'll retry
+            };
 
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
 
         Err(anyhow::anyhow!(
-            "Timed out waiting for Node {}:{} to be healthy",
+            "Timed out waiting for Node {}:{} to be healthy: Error: {:?}",
             self.name(),
-            self.peer_id()
+            self.peer_id(),
+            healthcheck_error
         ))
     }
 }

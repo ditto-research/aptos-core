@@ -1,10 +1,11 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
     get_first_seq_num_and_limit,
     pruner::{
-        ledger_pruner_manager::LedgerPrunerManager, state_pruner_manager::StatePrunerManager,
+        ledger_pruner_manager::LedgerPrunerManager,
+        state_merkle_pruner_manager::StateMerklePrunerManager,
     },
     test_helper,
     test_helper::{arb_blocks_to_commit, put_as_state_root, put_transaction_info},
@@ -16,19 +17,18 @@ use aptos_config::config::{
     DEFAULT_MAX_NUM_NODES_PER_LRU_CACHE_SHARD,
 };
 use aptos_crypto::{hash::CryptoHash, HashValue};
+use aptos_storage_interface::{DbReader, DbWriter, ExecutedTrees, Order};
 use aptos_temppath::TempPath;
-use aptos_types::ledger_info::LedgerInfoWithSignatures;
-use aptos_types::state_store::state_storage_usage::StateStorageUsage;
-use aptos_types::transaction::{TransactionToCommit, Version};
 use aptos_types::{
+    ledger_info::LedgerInfoWithSignatures,
     proof::SparseMerkleLeafNode,
-    state_store::{state_key::StateKey, state_value::StateValue},
-    transaction::{ExecutionStatus, TransactionInfo},
+    state_store::{
+        state_key::StateKey, state_storage_usage::StateStorageUsage, state_value::StateValue,
+    },
+    transaction::{ExecutionStatus, TransactionInfo, TransactionToCommit, Version},
 };
 use proptest::prelude::*;
-use std::collections::HashSet;
-use std::sync::Arc;
-use storage_interface::{DbReader, DbWriter, ExecutedTrees, Order};
+use std::{collections::HashSet, sync::Arc};
 use test_helper::{test_save_blocks_impl, test_sync_transactions_impl};
 
 proptest! {
@@ -92,7 +92,7 @@ fn test_pruner_config() {
     let tmp_dir = TempPath::new();
     let aptos_db = AptosDB::new_for_test(&tmp_dir);
     for enable in [false, true] {
-        let state_pruner = StatePrunerManager::<StaleNodeIndexSchema>::new(
+        let state_merkle_pruner = StateMerklePrunerManager::<StaleNodeIndexSchema>::new(
             Arc::clone(&aptos_db.state_merkle_db),
             StateMerklePrunerConfig {
                 enable,
@@ -100,19 +100,16 @@ fn test_pruner_config() {
                 batch_size: 1,
             },
         );
-        assert_eq!(state_pruner.is_pruner_enabled(), enable);
-        assert_eq!(state_pruner.get_prune_window(), 20);
+        assert_eq!(state_merkle_pruner.is_pruner_enabled(), enable);
+        assert_eq!(state_merkle_pruner.get_prune_window(), 20);
 
-        let ledger_pruner = LedgerPrunerManager::new(
-            Arc::clone(&aptos_db.ledger_db),
-            Arc::clone(&aptos_db.state_store),
-            LedgerPrunerConfig {
+        let ledger_pruner =
+            LedgerPrunerManager::new(Arc::clone(&aptos_db.ledger_db), LedgerPrunerConfig {
                 enable,
                 prune_window: 100,
                 batch_size: 1,
                 user_pruning_window_offset: 0,
-            },
-        );
+            });
         assert_eq!(ledger_pruner.is_pruner_enabled(), enable);
         assert_eq!(ledger_pruner.get_prune_window(), 100);
     }
@@ -124,9 +121,10 @@ fn test_error_if_version_pruned() {
     let db = AptosDB::new_for_test(&tmp_dir);
     db.state_store
         .state_db
-        .state_pruner
-        .testonly_update_min_version(5);
-    db.ledger_pruner.testonly_update_min_version(10);
+        .state_merkle_pruner
+        .save_min_readable_version(5)
+        .unwrap();
+    db.ledger_pruner.save_min_readable_version(10).unwrap();
     assert_eq!(
         db.error_if_state_merkle_pruned("State", 4)
             .unwrap_err()
@@ -153,7 +151,7 @@ fn test_get_latest_executed_trees() {
     assert!(empty.is_same_view(&ExecutedTrees::new_empty()));
 
     // bootstrapped db (any transaction info is in)
-    let key = StateKey::Raw(String::from("test_key").into_bytes());
+    let key = StateKey::raw(String::from("test_key").into_bytes());
     let value = StateValue::from(String::from("test_val").into_bytes());
     let hash = SparseMerkleLeafNode::new(key.hash(), value.hash()).hash();
     put_as_state_root(&db, 0, key, value);
@@ -253,17 +251,13 @@ pub fn test_state_merkle_pruning_impl(
             .collect();
 
         // Prune till the oldest snapshot readable.
-        let pruner = &db.state_store.state_db.state_pruner;
+        let pruner = &db.state_store.state_db.state_merkle_pruner;
         let epoch_snapshot_pruner = &db.state_store.state_db.epoch_snapshot_pruner;
-        pruner
-            .pruner_worker
-            .set_target_db_version(*snapshots.first().unwrap());
-        epoch_snapshot_pruner
-            .pruner_worker
-            .set_target_db_version(std::cmp::min(
-                *snapshots.first().unwrap(),
-                *epoch_snapshots.first().unwrap_or(&Version::MAX),
-            ));
+        pruner.set_worker_target_version(*snapshots.first().unwrap());
+        epoch_snapshot_pruner.set_worker_target_version(std::cmp::min(
+            *snapshots.first().unwrap(),
+            *epoch_snapshots.first().unwrap_or(&Version::MAX),
+        ));
         pruner.wait_for_pruner().unwrap();
         epoch_snapshot_pruner.wait_for_pruner().unwrap();
 

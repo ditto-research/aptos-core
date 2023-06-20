@@ -1,4 +1,5 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 //! This file defines event store APIs that are related to the event accumulator and events
@@ -6,13 +7,13 @@
 #![allow(unused)]
 
 use super::AptosDB;
-use crate::utils::iterators::EventsByVersionIter;
 use crate::{
     errors::AptosDbError,
     schema::{
         event::EventSchema, event_accumulator::EventAccumulatorSchema,
         event_by_key::EventByKeySchema, event_by_version::EventByVersionSchema,
     },
+    utils::iterators::EventsByVersionIter,
 };
 use anyhow::{bail, ensure, format_err, Result};
 use aptos_accumulator::{HashReader, MerkleAccumulator};
@@ -20,6 +21,7 @@ use aptos_crypto::{
     hash::{CryptoHash, EventAccumulatorHasher},
     HashValue,
 };
+use aptos_schemadb::{iterator::SchemaIterator, schema::ValueCodec, ReadOptions, SchemaBatch, DB};
 use aptos_types::{
     account_address::AccountAddress,
     account_config::{new_block_event_key, NewBlockEvent},
@@ -28,8 +30,6 @@ use aptos_types::{
     proof::position::Position,
     transaction::Version,
 };
-use schemadb::iterator::SchemaIterator;
-use schemadb::{schema::ValueCodec, ReadOptions, SchemaBatch, DB};
 use std::{
     collections::{hash_map::Entry, HashMap, HashSet},
     convert::{TryFrom, TryInto},
@@ -39,12 +39,12 @@ use std::{
 
 #[derive(Debug)]
 pub struct EventStore {
-    db: Arc<DB>,
+    event_db: Arc<DB>,
 }
 
 impl EventStore {
-    pub fn new(db: Arc<DB>) -> Self {
-        Self { db }
+    pub fn new(event_db: Arc<DB>) -> Self {
+        Self { event_db }
     }
 
     /// Get all of the events given a transaction version.
@@ -53,7 +53,7 @@ impl EventStore {
     pub fn get_events_by_version(&self, version: Version) -> Result<Vec<ContractEvent>> {
         let mut events = vec![];
 
-        let mut iter = self.db.iter::<EventSchema>(ReadOptions::default())?;
+        let mut iter = self.event_db.iter::<EventSchema>(ReadOptions::default())?;
         // Grab the first event and then iterate until we get all events for this version.
         iter.seek(&version)?;
         while let Some(((ver, index), event)) = iter.next().transpose()? {
@@ -71,7 +71,7 @@ impl EventStore {
         start_version: Version,
         num_versions: usize,
     ) -> Result<EventsByVersionIter> {
-        let mut iter = self.db.iter::<EventSchema>(Default::default())?;
+        let mut iter = self.event_db.iter::<EventSchema>(Default::default())?;
         iter.seek(&start_version)?;
 
         Ok(EventsByVersionIter::new(
@@ -88,7 +88,7 @@ impl EventStore {
         version: Version,
         index: u64,
     ) -> Result<ContractEvent> {
-        self.db
+        self.event_db
             .get::<EventSchema>(&(version, index))?
             .ok_or_else(|| {
                 AptosDbError::NotFound(format!("Event {} of Txn {}", index, version)).into()
@@ -97,7 +97,7 @@ impl EventStore {
 
     pub fn get_txn_ver_by_seq_num(&self, event_key: &EventKey, seq_num: u64) -> Result<u64> {
         let (ver, _) = self
-            .db
+            .event_db
             .get::<EventByKeySchema>(&(*event_key, seq_num))?
             .ok_or_else(|| format_err!("Index entry should exist for seq_num {}", seq_num))?;
         Ok(ver)
@@ -124,7 +124,7 @@ impl EventStore {
         event_key: &EventKey,
     ) -> Result<Option<u64>> {
         let mut iter = self
-            .db
+            .event_db
             .iter::<EventByVersionSchema>(ReadOptions::default())?;
         iter.seek_for_prev(&(*event_key, ledger_version, u64::max_value()));
 
@@ -163,7 +163,9 @@ impl EventStore {
             u64,     // index among events for the same transaction
         )>,
     > {
-        let mut iter = self.db.iter::<EventByKeySchema>(ReadOptions::default())?;
+        let mut iter = self
+            .event_db
+            .iter::<EventByKeySchema>(ReadOptions::default())?;
         iter.seek(&(*event_key, start_seq_num))?;
 
         let mut result = Vec::new();
@@ -219,7 +221,7 @@ impl EventStore {
         )>,
     > {
         let mut iter = self
-            .db
+            .event_db
             .iter::<EventByVersionSchema>(ReadOptions::default())?;
         iter.seek_for_prev(&(*event_key, version, u64::MAX))?;
 
@@ -231,7 +233,7 @@ impl EventStore {
                 } else {
                     Ok(None)
                 }
-            }
+            },
         }
     }
 
@@ -247,7 +249,7 @@ impl EventStore {
         )>,
     > {
         let mut iter = self
-            .db
+            .event_db
             .iter::<EventByVersionSchema>(ReadOptions::default())?;
         iter.seek(&(*event_key, version, 0))?;
 
@@ -259,7 +261,7 @@ impl EventStore {
                 } else {
                     Ok(None)
                 }
-            }
+            },
         }
     }
 
@@ -275,7 +277,7 @@ impl EventStore {
         )>,
     > {
         let mut iter = self
-            .db
+            .event_db
             .iter::<EventByVersionSchema>(ReadOptions::default())?;
         iter.seek(&(*event_key, version + 1, 0))?;
 
@@ -287,7 +289,7 @@ impl EventStore {
                 } else {
                     Ok(None)
                 }
-            }
+            },
         }
     }
 
@@ -307,7 +309,7 @@ impl EventStore {
         &self,
         version: u64,
         events: &[ContractEvent],
-        batch: &mut SchemaBatch,
+        batch: &SchemaBatch,
     ) -> Result<HashValue> {
         // Event table and indices updates
         events
@@ -343,7 +345,7 @@ impl EventStore {
         &self,
         first_version: u64,
         event_vecs: &[Vec<ContractEvent>],
-        batch: &mut SchemaBatch,
+        batch: &SchemaBatch,
     ) -> Result<Vec<HashValue>> {
         event_vecs
             .iter()
@@ -440,9 +442,11 @@ impl EventStore {
         &self,
         begin: Version,
         end: Version,
-        db_batch: &mut SchemaBatch,
+        db_batch: &SchemaBatch,
     ) -> anyhow::Result<()> {
-        let mut iter = self.db.iter::<EventAccumulatorSchema>(Default::default())?;
+        let mut iter = self
+            .event_db
+            .iter::<EventAccumulatorSchema>(Default::default())?;
         iter.seek(&(begin, Position::from_inorder_index(0)))?;
         while let Some(((version, position), _)) = iter.next().transpose()? {
             if version >= end {
@@ -458,18 +462,18 @@ impl EventStore {
         &self,
         start: Version,
         end: Version,
-        db_batch: &mut SchemaBatch,
+        db_batch: &SchemaBatch,
     ) -> anyhow::Result<()> {
         let mut current_version = start;
         for events in self.get_events_by_version_iter(start, (end - start) as usize)? {
             for (current_index, event) in (events?).into_iter().enumerate() {
                 db_batch.delete::<EventByVersionSchema>(&(
                     *event.key(),
-                    current_version as u64,
+                    current_version,
                     event.sequence_number(),
                 ))?;
                 db_batch.delete::<EventByKeySchema>(&(*event.key(), event.sequence_number()))?;
-                db_batch.delete::<EventSchema>(&(current_version as u64, current_index as u64))?;
+                db_batch.delete::<EventSchema>(&(current_version, current_index as u64))?;
             }
             current_version += 1;
         }
@@ -492,7 +496,7 @@ impl<'a> EventHashReader<'a> {
 impl<'a> HashReader for EventHashReader<'a> {
     fn get(&self, position: Position) -> Result<HashValue> {
         self.store
-            .db
+            .event_db
             .get::<EventAccumulatorSchema>(&(self.version, position))?
             .ok_or_else(|| format_err!("Hash at position {:?} not found.", position))
     }

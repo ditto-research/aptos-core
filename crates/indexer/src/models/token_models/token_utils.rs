@@ -1,4 +1,4 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
 // This is required because a diesel macro makes clippy sad
@@ -14,15 +14,21 @@ use bigdecimal::BigDecimal;
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Formatter};
 
-const NAME_LENGTH: usize = 128;
-const URI_LENGTH: usize = 512;
+pub const NAME_LENGTH: usize = 128;
+pub const URI_LENGTH: usize = 512;
 /**
  * This file defines deserialized move types as defined in our 0x3 contracts.
  */
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Table {
-    pub handle: String,
+    handle: String,
+}
+
+impl Table {
+    pub fn get_handle(&self) -> String {
+        standardize_address(self.handle.as_str())
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -33,6 +39,10 @@ pub struct TokenDataIdType {
 }
 
 impl TokenDataIdType {
+    pub fn to_id(&self) -> String {
+        format!("0x{}", self.to_hash())
+    }
+
     pub fn to_hash(&self) -> String {
         hash_str(&self.to_string())
     }
@@ -47,6 +57,10 @@ impl TokenDataIdType {
 
     pub fn get_collection_data_id_hash(&self) -> String {
         CollectionDataIdType::new(self.creator.clone(), self.collection.clone()).to_hash()
+    }
+
+    pub fn get_collection_id(&self) -> String {
+        CollectionDataIdType::new(self.creator.clone(), self.collection.clone()).to_id()
     }
 }
 
@@ -72,8 +86,13 @@ impl CollectionDataIdType {
     pub fn new(creator: String, name: String) -> Self {
         Self { creator, name }
     }
+
     pub fn to_hash(&self) -> String {
         hash_str(&self.to_string())
+    }
+
+    pub fn to_id(&self) -> String {
+        format!("0x{}", self.to_hash())
     }
 
     pub fn get_name_trunc(&self) -> String {
@@ -314,7 +333,7 @@ impl TokenWriteSet {
                 .map(|inner| Some(TokenWriteSet::TokenData(inner))),
             "0x3::token::Token" => {
                 serde_json::from_value(data.clone()).map(|inner| Some(TokenWriteSet::Token(inner)))
-            }
+            },
             "0x3::token::CollectionData" => serde_json::from_value(data.clone())
                 .map(|inner| Some(TokenWriteSet::CollectionData(inner))),
             "0x3::token_transfers::TokenOfferId" => serde_json::from_value(data.clone())

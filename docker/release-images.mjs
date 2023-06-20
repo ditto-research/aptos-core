@@ -32,6 +32,7 @@ const Features = {
   Indexer: "indexer",
 };
 
+const IMAGES_TO_RELEASE_ONLY_INTERNAL = ["validator-testing"];
 const IMAGES_TO_RELEASE = {
   validator: {
     performance: [
@@ -40,6 +41,20 @@ const IMAGES_TO_RELEASE = {
     release: [
       Features.Default,
       Features.Indexer,
+    ],
+  },
+  "validator-testing": {
+    performance: [
+      Features.Default,
+    ],
+    release: [
+      Features.Default,
+      Features.Indexer,
+    ],
+  },
+  faucet: {
+    release: [
+      Features.Default,
     ],
   },
   forge: {
@@ -56,7 +71,12 @@ const IMAGES_TO_RELEASE = {
     release: [
       Features.Default,
     ],
-  }
+  },
+  "indexer-grpc": {
+    release: [
+      Features.Default,
+    ],
+  },
 };
 
 import { execSync } from "node:child_process";
@@ -70,7 +90,7 @@ chdir(dirname(process.argv[1]) + "/.."); // change workdir to the root of the re
 execSync("pnpm install --frozen-lockfile", { stdio: "inherit" });
 await import("zx/globals");
 
-const REQUIRED_ARGS = ["GIT_SHA", "GCP_DOCKER_ARTIFACT_REPO", "AWS_ACCOUNT_ID", "IMAGE_TAG_PREFIX"];
+const REQUIRED_ARGS = ["GIT_SHA", "GCP_DOCKER_ARTIFACT_REPO", "GCP_DOCKER_ARTIFACT_REPO_US", "AWS_ACCOUNT_ID", "IMAGE_TAG_PREFIX"];
 const OPTIONAL_ARGS = ["WAIT_FOR_IMAGE_SECONDS"];
 
 const parsedArgs = {};
@@ -93,13 +113,13 @@ let crane;
 
 if (process.env.CI === "true") {
   console.log("installing crane automatically in CI");
-  await $`curl -sL https://github.com/google/go-containerregistry/releases/download/v0.11.0/go-containerregistry_Linux_x86_64.tar.gz > crane.tar.gz`;
-  await $`tar -xf crane.tar.gz`;
-  const sha = (await $`shasum -a 256 ./crane | awk '{ print $1 }'`).toString().trim();
-  if (sha !== "2af448965b5feb6c315f4c8e79b18bd15f8c916ead0396be3962baf2f0c815bf") {
-    console.error(chalk.red(`ERROR: sha256 mismatch for crane- got: ${sha}`));
+  await $`curl -sL https://github.com/google/go-containerregistry/releases/download/v0.15.1/go-containerregistry_Linux_x86_64.tar.gz > crane.tar.gz`;
+  const sha = (await $`shasum -a 256 ./crane.tar.gz | awk '{ print $1 }'`).toString().trim();
+  if (sha !== "d4710014a3bd135eb1d4a9142f509cfd61d2be242e5f5785788e404448a4f3f2") {
+    console.error(chalk.red(`ERROR: sha256 mismatch for crane.tar.gz got: ${sha}`));
     process.exit(1);
   }
+  await $`tar -xf crane.tar.gz`;
   crane = "./crane";
 } else {
   if ((await $`command -v crane`.exitCode) !== 0) {
@@ -113,10 +133,20 @@ if (process.env.CI === "true") {
   crane = "crane";
 }
 
-const TARGET_REGISTRIES = [
-  parsedArgs.GCP_DOCKER_ARTIFACT_REPO,
-  "docker.io/aptoslabs",
-  `${parsedArgs.AWS_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com/aptos`,
+const AWS_ECR = `${parsedArgs.AWS_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com/aptos`;
+const GCP_ARTIFACT_REPO = parsedArgs.GCP_DOCKER_ARTIFACT_REPO;
+const GCP_ARTIFACT_REPO_US = parsedArgs.GCP_DOCKER_ARTIFACT_REPO_US;
+const DOCKERHUB = "docker.io/aptoslabs";
+
+const INTERNAL_TARGET_REGISTRIES = [
+  GCP_ARTIFACT_REPO,
+  GCP_ARTIFACT_REPO_US,
+  AWS_ECR,
+];
+
+const ALL_TARGET_REGISTRIES = [
+  ...INTERNAL_TARGET_REGISTRIES,
+  DOCKERHUB,
 ];
 
 // default 10 seconds
@@ -128,8 +158,9 @@ for (const [image, imageConfig] of Object.entries(IMAGES_TO_RELEASE)) {
     const profilePrefix = profile === "release" ? "" : profile;
     for (const feature of features) {
       const featureSuffix = feature === Features.Default ? "" : feature;
+      const targetRegistries = IMAGES_TO_RELEASE_ONLY_INTERNAL.includes(image) ? INTERNAL_TARGET_REGISTRIES : ALL_TARGET_REGISTRIES;
 
-      for (const targetRegistry of TARGET_REGISTRIES) {
+      for (const targetRegistry of targetRegistries) {
         const imageSource = `${parsedArgs.GCP_DOCKER_ARTIFACT_REPO}/${image}:${joinTagSegments(
           profilePrefix,
           featureSuffix,

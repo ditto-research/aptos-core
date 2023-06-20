@@ -1,12 +1,15 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
     executor::BlockExecutor,
     proptest_types::types::{
-        ExpectedOutput, KeyType, Task, Transaction, TransactionGen, TransactionGenParams, ValueType,
+        EmptyDataView, ExpectedOutput, KeyType, Task, Transaction, TransactionGen,
+        TransactionGenParams, ValueType,
     },
 };
+use aptos_types::executable::ExecutableTestType;
 use criterion::{BatchSize, Bencher as CBencher};
 use num_cpus;
 use proptest::{
@@ -16,15 +19,13 @@ use proptest::{
     strategy::{Strategy, ValueTree},
     test_runner::TestRunner,
 };
-
-use std::{fmt::Debug, hash::Hash, marker::PhantomData};
+use std::{fmt::Debug, hash::Hash, marker::PhantomData, sync::Arc};
 
 pub struct Bencher<K, V> {
     transaction_size: usize,
     transaction_gen_param: TransactionGenParams,
     universe_size: usize,
-    phantom_key: PhantomData<K>,
-    phantom_value: PhantomData<V>,
+    phantom: PhantomData<(K, V)>,
 }
 
 pub(crate) struct BencherState<
@@ -48,8 +49,7 @@ where
             transaction_size,
             transaction_gen_param: TransactionGenParams::default(),
             universe_size,
-            phantom_key: PhantomData,
-            phantom_value: PhantomData,
+            phantom: PhantomData,
         }
     }
 
@@ -101,7 +101,7 @@ where
             .map(|txn_gen| txn_gen.materialize(&key_universe, (false, false)))
             .collect();
 
-        let expected_output = ExpectedOutput::generate_baseline(&transactions, None);
+        let expected_output = ExpectedOutput::generate_baseline(&transactions, None, None);
 
         Self {
             transactions,
@@ -110,13 +110,25 @@ where
     }
 
     pub(crate) fn run(self) {
+        let data_view = EmptyDataView::<KeyType<K>, ValueType<V>> {
+            phantom: PhantomData,
+        };
+
+        let executor_thread_pool = Arc::new(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(num_cpus::get())
+                .build()
+                .unwrap(),
+        );
+
         let output = BlockExecutor::<
             Transaction<KeyType<K>, ValueType<V>>,
             Task<KeyType<K>, ValueType<V>>,
-        >::new(num_cpus::get())
-        .execute_transactions_parallel((), &self.transactions)
-        .map(|(res, _)| res);
+            EmptyDataView<KeyType<K>, ValueType<V>>,
+            ExecutableTestType,
+        >::new(num_cpus::get(), executor_thread_pool, None)
+        .execute_transactions_parallel((), &self.transactions, &data_view);
 
-        self.expected_output.assert_output(&output, None);
+        self.expected_output.assert_output(&output);
     }
 }

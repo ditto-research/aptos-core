@@ -18,6 +18,8 @@ which reflect that the system has been successfully initialized.
 -  [Function `assert_genesis`](#0x1_chain_status_assert_genesis)
 -  [Specification](#@Specification_1)
     -  [Function `set_genesis_end`](#@Specification_1_set_genesis_end)
+    -  [Function `assert_operating`](#@Specification_1_assert_operating)
+    -  [Function `assert_genesis`](#@Specification_1_assert_genesis)
 
 
 <pre><code><b>use</b> <a href="../../aptos-stdlib/../move-stdlib/doc/error.md#0x1_error">0x1::error</a>;
@@ -112,7 +114,8 @@ Marks that genesis has finished.
 Helper function to determine if Aptos is in genesis state.
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="chain_status.md#0x1_chain_status_is_genesis">is_genesis</a>(): bool
+<pre><code>#[view]
+<b>public</b> <b>fun</b> <a href="chain_status.md#0x1_chain_status_is_genesis">is_genesis</a>(): bool
 </code></pre>
 
 
@@ -139,7 +142,8 @@ the same as <code>!<a href="chain_status.md#0x1_chain_status_is_genesis">is_gene
 Testing <code><a href="chain_status.md#0x1_chain_status_is_operating">is_operating</a>()</code> is more frequent than <code><a href="chain_status.md#0x1_chain_status_is_genesis">is_genesis</a>()</code>.
 
 
-<pre><code><b>public</b> <b>fun</b> <a href="chain_status.md#0x1_chain_status_is_operating">is_operating</a>(): bool
+<pre><code>#[view]
+<b>public</b> <b>fun</b> <a href="chain_status.md#0x1_chain_status_is_operating">is_operating</a>(): bool
 </code></pre>
 
 
@@ -212,6 +216,13 @@ Helper function to assert genesis state.
 ## Specification
 
 
+
+<pre><code><b>pragma</b> verify = <b>true</b>;
+<b>pragma</b> aborts_if_is_strict;
+</code></pre>
+
+
+
 <a name="@Specification_1_set_genesis_end"></a>
 
 ### Function `set_genesis_end`
@@ -238,4 +249,36 @@ Helper function to assert genesis state.
 </code></pre>
 
 
-[move-book]: https://move-language.github.io/move/introduction.html
+
+<a name="@Specification_1_assert_operating"></a>
+
+### Function `assert_operating`
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="chain_status.md#0x1_chain_status_assert_operating">assert_operating</a>()
+</code></pre>
+
+
+
+
+<pre><code><b>aborts_if</b> !<a href="chain_status.md#0x1_chain_status_is_operating">is_operating</a>();
+</code></pre>
+
+
+
+<a name="@Specification_1_assert_genesis"></a>
+
+### Function `assert_genesis`
+
+
+<pre><code><b>public</b> <b>fun</b> <a href="chain_status.md#0x1_chain_status_assert_genesis">assert_genesis</a>()
+</code></pre>
+
+
+
+
+<pre><code><b>aborts_if</b> !<a href="chain_status.md#0x1_chain_status_is_genesis">is_genesis</a>();
+</code></pre>
+
+
+[move-book]: https://aptos.dev/guides/move-guides/book/SUMMARY

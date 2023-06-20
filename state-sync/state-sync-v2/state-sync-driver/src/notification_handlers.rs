@@ -1,4 +1,5 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
@@ -10,25 +11,22 @@ use aptos_consensus_notifications::{
     ConsensusSyncNotification,
 };
 use aptos_data_streaming_service::data_notification::NotificationId;
+use aptos_event_notifications::{EventNotificationSender, EventSubscriptionService};
 use aptos_infallible::Mutex;
 use aptos_logger::prelude::*;
+use aptos_mempool_notifications::MempoolNotificationSender;
 use aptos_types::{
     contract_event::ContractEvent,
     ledger_info::LedgerInfoWithSignatures,
     transaction::{Transaction, Version},
 };
-use event_notifications::{EventNotificationSender, EventSubscriptionService};
 use futures::{channel::mpsc, stream::FusedStream, Stream};
-use mempool_notifications::MempoolNotificationSender;
 use serde::Serialize;
 use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
 };
-
-// TODO(joshlind): make these configurable!
-const MEMPOOL_COMMIT_ACK_TIMEOUT_MS: u64 = 5000; // 5 seconds
 
 /// A notification for new data that has been committed to storage
 #[derive(Clone, Debug)]
@@ -391,15 +389,18 @@ impl FusedStream for ErrorNotificationListener {
 /// A simple handler for sending notifications to mempool
 #[derive(Clone)]
 pub struct MempoolNotificationHandler<M> {
+    mempool_commit_ack_timeout_ms: u64,
     mempool_notification_sender: M,
 }
 
 impl<M: MempoolNotificationSender> MempoolNotificationHandler<M> {
-    pub fn new(mempool_notification_sender: M) -> Self {
+    pub fn new(mempool_notification_sender: M, mempool_commit_ack_timeout_ms: u64) -> Self {
         Self {
+            mempool_commit_ack_timeout_ms,
             mempool_notification_sender,
         }
     }
+
     /// Notifies mempool that transactions have been committed.
     pub async fn notify_mempool_of_committed_transactions(
         &mut self,
@@ -411,7 +412,7 @@ impl<M: MempoolNotificationSender> MempoolNotificationHandler<M> {
             .notify_new_commit(
                 committed_transactions,
                 block_timestamp_usecs,
-                MEMPOOL_COMMIT_ACK_TIMEOUT_MS,
+                self.mempool_commit_ack_timeout_ms,
             )
             .await;
 

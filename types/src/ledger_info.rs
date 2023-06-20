@@ -1,4 +1,5 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 #[cfg(any(test, feature = "fuzzing"))]
@@ -16,8 +17,8 @@ use aptos_crypto_derive::{BCSCryptoHash, CryptoHasher};
 #[cfg(any(test, feature = "fuzzing"))]
 use proptest_derive::Arbitrary;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::{
+    collections::BTreeMap,
     fmt::{Display, Formatter},
     ops::{Deref, DerefMut},
 };
@@ -31,7 +32,7 @@ use std::{
 /// reduce the number of proofs a client must get.
 ///
 /// Second, the structure contains a `consensus_data_hash` value. This is the hash of an internal
-/// data structure that represents a block that is voted on in HotStuff. If 2f+1 signatures are
+/// data structure that represents a block that is voted on in Consensus. If 2f+1 signatures are
 /// gathered on the same ledger info that represents a Quorum Certificate (QC) on the consensus
 /// data.
 ///
@@ -284,6 +285,7 @@ impl LedgerInfoWithV0 {
                 .iter(),
         )
     }
+
     pub fn signatures(&self) -> &AggregateSignature {
         &self.signatures
     }
@@ -356,14 +358,16 @@ use crate::aggregate_signature::{AggregateSignature, PartialSignatures};
 use crate::validator_verifier::generate_validator_verifier;
 #[cfg(any(test, feature = "fuzzing"))]
 use crate::validator_verifier::random_validator_verifier;
-#[cfg(any(test, feature = "fuzzing"))]
-use ::proptest::prelude::*;
 use aptos_bitvec::BitVec;
 use itertools::Itertools;
+#[cfg(any(test, feature = "fuzzing"))]
+use proptest::prelude::*;
 
 #[cfg(any(test, feature = "fuzzing"))]
 impl Arbitrary for LedgerInfoWithV0 {
     type Parameters = ();
+    type Strategy = BoxedStrategy<Self>;
+
     fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
         let dummy_signature = bls12381::Signature::dummy_signature();
         (any::<LedgerInfo>(), (1usize..100))
@@ -382,8 +386,6 @@ impl Arbitrary for LedgerInfoWithV0 {
             })
             .boxed()
     }
-
-    type Strategy = BoxedStrategy<Self>;
 }
 
 #[cfg(test)]

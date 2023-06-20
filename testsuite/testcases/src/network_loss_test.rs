@@ -1,8 +1,8 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{LoadDestination, NetworkLoadTest};
-use forge::{NetworkContext, NetworkTest, Swarm, SwarmChaos, SwarmNetworkLoss, Test};
+use aptos_forge::{NetworkContext, NetworkTest, Swarm, SwarmChaos, SwarmNetworkLoss, Test};
 
 pub struct NetworkLossTest;
 
@@ -30,7 +30,7 @@ impl NetworkLoadTest for NetworkLossTest {
         );
         println!("{}", msg);
         ctx.report.report_text(msg);
-        Ok(LoadDestination::AllNodes)
+        Ok(LoadDestination::FullnodesOtherwiseValidators)
     }
 
     fn finish(&self, swarm: &mut dyn Swarm) -> anyhow::Result<()> {
@@ -42,7 +42,7 @@ impl NetworkLoadTest for NetworkLossTest {
 }
 
 impl NetworkTest for NetworkLossTest {
-    fn run<'t>(&self, ctx: &mut NetworkContext<'t>) -> anyhow::Result<()> {
+    fn run(&self, ctx: &mut NetworkContext<'_>) -> anyhow::Result<()> {
         <dyn NetworkLoadTest>::run(self, ctx)
     }
 }

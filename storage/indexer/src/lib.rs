@@ -1,4 +1,4 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
 mod db;
@@ -16,11 +16,13 @@ use anyhow::{bail, ensure, Result};
 use aptos_config::config::RocksdbConfig;
 use aptos_logger::warn;
 use aptos_rocksdb_options::gen_rocksdb_options;
+use aptos_schemadb::{SchemaBatch, DB};
+use aptos_storage_interface::{state_view::DbStateView, DbReader};
 use aptos_types::{
     access_path::Path,
     account_address::AccountAddress,
     state_store::{
-        state_key::StateKey,
+        state_key::{StateKey, StateKeyInner},
         table::{TableHandle, TableInfo},
     },
     transaction::{AtomicVersion, Version},
@@ -28,17 +30,15 @@ use aptos_types::{
 };
 use aptos_vm::data_cache::{AsMoveResolver, StorageAdapter};
 use move_core_types::{
-    identifier::IdentStr,
+    ident_str,
     language_storage::{StructTag, TypeTag},
 };
 use move_resource_viewer::{AnnotatedMoveValue, MoveValueAnnotator};
-use schemadb::{SchemaBatch, DB};
 use std::{
     collections::HashMap,
     convert::TryInto,
     sync::{atomic::Ordering, Arc},
 };
-use storage_interface::{state_view::DbStateView, DbReader};
 
 #[derive(Debug)]
 pub struct Indexer {
@@ -159,19 +159,19 @@ impl<'a> TableInfoParser<'a> {
     }
 
     pub fn parse_write_op(&mut self, state_key: &'a StateKey, write_op: &'a WriteOp) -> Result<()> {
-        match write_op {
-            WriteOp::Modification(bytes) | WriteOp::Creation(bytes) => match state_key {
-                StateKey::AccessPath(access_path) => {
+        if let Some(bytes) = write_op.bytes() {
+            match state_key.inner() {
+                StateKeyInner::AccessPath(access_path) => {
                     let path: Path = (&access_path.path).try_into()?;
                     match path {
                         Path::Code(_) => (),
                         Path::Resource(struct_tag) => self.parse_struct(struct_tag, bytes)?,
+                        Path::ResourceGroup(_struct_tag) => (),
                     }
-                }
-                StateKey::TableItem { handle, .. } => self.parse_table_item(*handle, bytes)?,
-                StateKey::Raw(_) => (),
-            },
-            WriteOp::Deletion => (),
+                },
+                StateKeyInner::TableItem { handle, .. } => self.parse_table_item(*handle, bytes)?,
+                StateKeyInner::Raw(_) => (),
+            }
         }
         Ok(())
     }
@@ -188,13 +188,13 @@ impl<'a> TableInfoParser<'a> {
         match self.get_table_info(handle)? {
             Some(table_info) => {
                 self.parse_move_value(&self.annotator.view_value(&table_info.value_type, bytes)?)?;
-            }
+            },
             None => {
                 self.pending_on
                     .entry(handle)
                     .or_insert_with(Vec::new)
                     .push(bytes);
-            }
+            },
         }
         Ok(())
     }
@@ -205,7 +205,7 @@ impl<'a> TableInfoParser<'a> {
                 for item in items {
                     self.parse_move_value(item)?;
                 }
-            }
+            },
             AnnotatedMoveValue::Struct(struct_value) => {
                 let struct_tag = &struct_value.type_;
                 if Self::is_table(struct_tag) {
@@ -216,9 +216,9 @@ impl<'a> TableInfoParser<'a> {
                     };
                     let table_handle = match &struct_value.value[0] {
                         (name, AnnotatedMoveValue::Address(handle)) => {
-                            assert_eq!(name.as_ref(), IdentStr::new("handle").unwrap());
+                            assert_eq!(name.as_ref(), ident_str!("handle"));
                             TableHandle(*handle)
-                        }
+                        },
                         _ => bail!("Table struct malformed. {:?}", struct_value),
                     };
                     self.save_table_info(table_handle, table_info)?;
@@ -227,15 +227,18 @@ impl<'a> TableInfoParser<'a> {
                         self.parse_move_value(field)?;
                     }
                 }
-            }
+            },
 
             // there won't be tables in primitives
-            AnnotatedMoveValue::U8(_) => {}
-            AnnotatedMoveValue::U64(_) => {}
-            AnnotatedMoveValue::U128(_) => {}
-            AnnotatedMoveValue::Bool(_) => {}
-            AnnotatedMoveValue::Address(_) => {}
-            AnnotatedMoveValue::Bytes(_) => {}
+            AnnotatedMoveValue::U8(_) => {},
+            AnnotatedMoveValue::U16(_) => {},
+            AnnotatedMoveValue::U32(_) => {},
+            AnnotatedMoveValue::U64(_) => {},
+            AnnotatedMoveValue::U128(_) => {},
+            AnnotatedMoveValue::U256(_) => {},
+            AnnotatedMoveValue::Bool(_) => {},
+            AnnotatedMoveValue::Address(_) => {},
+            AnnotatedMoveValue::Bytes(_) => {},
         }
         Ok(())
     }
@@ -254,8 +257,8 @@ impl<'a> TableInfoParser<'a> {
 
     fn is_table(struct_tag: &StructTag) -> bool {
         struct_tag.address == AccountAddress::ONE
-            && struct_tag.module.as_ref() == IdentStr::new("table").unwrap()
-            && struct_tag.name.as_ref() == IdentStr::new("Table").unwrap()
+            && struct_tag.module.as_ident_str() == ident_str!("table")
+            && struct_tag.name.as_ident_str() == ident_str!("Table")
     }
 
     fn get_table_info(&self, handle: TableHandle) -> Result<Option<TableInfo>> {

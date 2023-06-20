@@ -1,4 +1,5 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
@@ -36,11 +37,27 @@ fn verify(
 }
 
 fn save(store: &LedgerStore, first_version: Version, txn_infos: &[TransactionInfo]) -> HashValue {
-    let mut batch = SchemaBatch::new();
+    let transaction_info_batch = SchemaBatch::new();
+    let transaction_accumulator_batch = SchemaBatch::new();
     let root_hash = store
-        .put_transaction_infos(first_version, txn_infos, &mut batch)
+        .put_transaction_infos(
+            first_version,
+            txn_infos,
+            &transaction_info_batch,
+            &transaction_accumulator_batch,
+        )
         .unwrap();
-    store.db.write_schemas(batch).unwrap();
+    store
+        .ledger_db
+        .transaction_info_db()
+        .write_schemas(transaction_info_batch)
+        .unwrap();
+    store
+        .ledger_db
+        .transaction_accumulator_db()
+        .write_schemas(transaction_accumulator_batch)
+        .unwrap();
+
     root_hash
 }
 
@@ -95,7 +112,7 @@ proptest! {
             infos
                 .into_iter()
                 .skip(start_version as usize)
-                .take(num_transaction_infos as usize)
+                .take(num_transaction_infos)
                 .collect::<Vec<_>>(),
             iter.collect::<Result<Vec<_>>>().unwrap()
         );

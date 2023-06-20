@@ -1,26 +1,26 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::state_restore::{
-    StateSnapshotProgress, StateSnapshotRestore, StateValueBatch, StateValueWriter,
+    StateSnapshotProgress, StateSnapshotRestore, StateSnapshotRestoreMode, StateValueBatch,
+    StateValueWriter,
 };
 use anyhow::Result;
 use aptos_crypto::{hash::CryptoHash, HashValue};
 use aptos_infallible::RwLock;
-use aptos_jellyfish_merkle::mock_tree_store::MockTreeStore;
-use aptos_jellyfish_merkle::node_type::{LeafNode, Node, NodeKey};
-use aptos_jellyfish_merkle::test_helper::{init_mock_db, ValueBlob};
 use aptos_jellyfish_merkle::{
+    mock_tree_store::MockTreeStore,
+    node_type::{LeafNode, Node, NodeKey},
+    test_helper::{init_mock_db, ValueBlob},
     JellyfishMerkleTree, NodeBatch, TestKey, TestValue, TreeReader, TreeWriter,
 };
-use aptos_types::state_store::state_storage_usage::StateStorageUsage;
-use aptos_types::transaction::Version;
+use aptos_storage_interface::StateSnapshotReceiver;
+use aptos_types::{state_store::state_storage_usage::StateStorageUsage, transaction::Version};
 use proptest::{collection::btree_map, prelude::*};
 use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
 };
-use storage_interface::StateSnapshotReceiver;
 
 #[derive(Default)]
 struct MockSnapshotStore<K: TestKey, V: TestValue> {
@@ -104,8 +104,8 @@ where
     K: TestKey,
     V: TestValue,
 {
-    fn get_node_option(&self, node_key: &NodeKey) -> Result<Option<Node<K>>> {
-        self.tree_store.get_node_option(node_key)
+    fn get_node_option(&self, node_key: &NodeKey, tag: &str) -> Result<Option<Node<K>>> {
+        self.tree_store.get_node_option(node_key, tag)
     }
 
     fn get_rightmost_leaf(&self, version: Version) -> Result<Option<(NodeKey, LeafNode<K>)>> {
@@ -180,7 +180,7 @@ proptest! {
                 (Just(btree), Just(batch1_size), (1..=batch1_size))
             })
     ) {
-        let (db, version) = init_mock_store(&all.clone().into_iter().map(|(_, kv)| kv).collect());
+        let (db, version) = init_mock_store(&all.clone().into_values().collect());
         let tree = JellyfishMerkleTree::new(&db);
         let expected_root_hash = tree.get_root_hash(version).unwrap();
         let batch1: Vec<_> = all.clone().into_iter().take(batch1_size).collect();
@@ -188,7 +188,7 @@ proptest! {
         let restore_db = Arc::new(MockSnapshotStore::default());
         {
             let mut restore =
-                StateSnapshotRestore::new(&restore_db, &restore_db,  version, expected_root_hash, true /* async_commit */).unwrap();
+                StateSnapshotRestore::new(&restore_db, &restore_db,  version, expected_root_hash, true /* async_commit */, StateSnapshotRestoreMode::Default).unwrap();
             let proof = tree
                 .get_range_proof(batch1.last().map(|(key, _value)| *key).unwrap(), version)
                 .unwrap();
@@ -200,7 +200,7 @@ proptest! {
             let remaining_accounts: Vec<_> = all.clone().into_iter().skip(batch1_size - overlap_size).collect();
 
             let mut restore =
-                StateSnapshotRestore::new(&restore_db, &restore_db,  version, expected_root_hash, true /* async commit */ ).unwrap();
+                StateSnapshotRestore::new(&restore_db, &restore_db,  version, expected_root_hash, true /* async commit */, StateSnapshotRestoreMode::Default ).unwrap();
             let proof = tree
                 .get_range_proof(
                     remaining_accounts.last().map(|(h, _)| *h).unwrap(),
@@ -281,6 +281,7 @@ fn restore_without_interruption<V>(
             target_version,
             expected_root_hash,
             true, /* async_commit */
+            StateSnapshotRestoreMode::Default,
         )
         .unwrap()
     } else {
@@ -289,6 +290,7 @@ fn restore_without_interruption<V>(
             target_db,
             target_version,
             expected_root_hash,
+            StateSnapshotRestoreMode::Default,
         )
         .unwrap()
     };

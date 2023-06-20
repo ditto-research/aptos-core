@@ -1,14 +1,15 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::generate_traffic;
 use anyhow::bail;
-use aptos_logger::info;
-use aptos_sdk::move_types::account_address::AccountAddress;
-use forge::{
+use aptos_forge::{
     get_highest_synced_epoch, get_highest_synced_version, NetworkContext, NetworkTest, Result,
     SwarmExt, Test,
 };
+use aptos_logger::info;
+use aptos_sdk::move_types::account_address::AccountAddress;
 use std::time::Instant;
 use tokio::{runtime::Runtime, time::Duration};
 
@@ -27,7 +28,7 @@ impl Test for StateSyncFullnodePerformance {
 }
 
 impl NetworkTest for StateSyncFullnodePerformance {
-    fn run<'t>(&self, ctx: &mut NetworkContext<'t>) -> Result<()> {
+    fn run(&self, ctx: &mut NetworkContext<'_>) -> Result<()> {
         let all_fullnodes = get_fullnodes_and_check_setup(ctx, self.name())?;
 
         // Emit a lot of traffic and ensure the fullnodes can all sync
@@ -53,7 +54,7 @@ impl Test for StateSyncFullnodeFastSyncPerformance {
 }
 
 impl NetworkTest for StateSyncFullnodeFastSyncPerformance {
-    fn run<'t>(&self, ctx: &mut NetworkContext<'t>) -> Result<()> {
+    fn run(&self, ctx: &mut NetworkContext<'_>) -> Result<()> {
         let all_fullnodes = get_fullnodes_and_check_setup(ctx, self.name())?;
 
         // Emit a lot of traffic and ensure the fullnodes can all sync
@@ -94,7 +95,7 @@ impl NetworkTest for StateSyncFullnodeFastSyncPerformance {
                     "No instant vectors found for prom query {}",
                     prom_query
                 ));
-            }
+            },
         };
         info!(
             "Number of reported state values found on-chain is: {}",
@@ -129,7 +130,7 @@ impl Test for StateSyncValidatorPerformance {
 }
 
 impl NetworkTest for StateSyncValidatorPerformance {
-    fn run<'t>(&self, ctx: &mut NetworkContext<'t>) -> Result<()> {
+    fn run(&self, ctx: &mut NetworkContext<'_>) -> Result<()> {
         // Verify we have at least 7 validators (i.e., 3f+1, where f is 2)
         // so we can kill 2 validators but still make progress.
         let all_validators = ctx
@@ -187,15 +188,10 @@ fn get_fullnodes_and_check_setup(
     }
 
     // Log the test setup
-    let all_validators = ctx
-        .swarm()
-        .validators()
-        .map(|v| v.peer_id())
-        .collect::<Vec<_>>();
     info!(
         "Running state sync test {:?} with {:?} validators and {:?} fullnodes.",
         test_name,
-        all_validators.len(),
+        ctx.swarm().validators().count(),
         all_fullnodes.len()
     );
 
@@ -350,7 +346,7 @@ fn ensure_state_sync_transaction_throughput(
             "The time taken to state sync was 0 seconds! Something has gone wrong!"
         ));
     }
-    let state_sync_throughput = highest_synced_version as u64 / seconds_to_sync;
+    let state_sync_throughput = highest_synced_version / seconds_to_sync;
 
     // Report the state sync results
     let throughput_message = format!("State sync throughput : {} txn/sec", state_sync_throughput);
@@ -365,7 +361,7 @@ fn ensure_state_sync_transaction_throughput(
     // TODO: we fetch the TPS requirement from the given success criteria.
     // But, we should probably make it more generic to avoid this.
     // Ensure we meet the success criteria.
-    let min_expected_tps = ctx.success_criteria.avg_tps as u64;
+    let min_expected_tps = ctx.success_criteria.min_avg_tps as u64;
     if state_sync_throughput < min_expected_tps {
         let error_message = format!(
             "State sync TPS requirement failed. Average TPS: {}, minimum required TPS: {}",

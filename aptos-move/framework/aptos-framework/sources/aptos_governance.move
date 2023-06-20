@@ -1,16 +1,15 @@
-/**
- * AptosGovernance represents the on-chain governance of the Aptos network. Voting power is calculated based on the
- * current epoch's voting power of the proposer or voter's backing stake pool. In addition, for it to count,
- * the stake pool's lockup needs to be at least as long as the proposal's duration.
- *
- * It provides the following flow:
- * 1. Proposers can create a proposal by calling AptosGovernance::create_proposal. The proposer's backing stake pool
- * needs to have the minimum proposer stake required. Off-chain components can subscribe to CreateProposalEvent to
- * track proposal creation and proposal ids.
- * 2. Voters can vote on a proposal. Their voting power is derived from the backing stake pool. Each stake pool can
- * only be used to vote on each proposal exactly once.
- *
- */
+///
+/// AptosGovernance represents the on-chain governance of the Aptos network. Voting power is calculated based on the
+/// current epoch's voting power of the proposer or voter's backing stake pool. In addition, for it to count,
+/// the stake pool's lockup needs to be at least as long as the proposal's duration.
+///
+/// It provides the following flow:
+/// 1. Proposers can create a proposal by calling AptosGovernance::create_proposal. The proposer's backing stake pool
+/// needs to have the minimum proposer stake required. Off-chain components can subscribe to CreateProposalEvent to
+/// track proposal creation and proposal ids.
+/// 2. Voters can vote on a proposal. Their voting power is derived from the backing stake pool. Each stake pool can
+/// only be used to vote on each proposal exactly once.
+///
 module aptos_framework::aptos_governance {
     use std::error;
     use std::option;
@@ -129,7 +128,8 @@ module aptos_framework::aptos_governance {
         signer_address: address,
         signer_cap: SignerCapability,
     ) acquires GovernanceResponsbility {
-        system_addresses::assert_framework_reserved_address(aptos_framework);
+        system_addresses::assert_aptos_framework(aptos_framework);
+        system_addresses::assert_framework_reserved(signer_address);
 
         if (!exists<GovernanceResponsbility>(@aptos_framework)) {
             move_to(aptos_framework, GovernanceResponsbility { signer_caps: simple_map::create<address, SignerCapability>() });
@@ -195,14 +195,17 @@ module aptos_framework::aptos_governance {
         );
     }
 
+    #[view]
     public fun get_voting_duration_secs(): u64 acquires GovernanceConfig {
         borrow_global<GovernanceConfig>(@aptos_framework).voting_duration_secs
     }
 
+    #[view]
     public fun get_min_voting_threshold(): u128 acquires GovernanceConfig {
         borrow_global<GovernanceConfig>(@aptos_framework).min_voting_threshold
     }
 
+    #[view]
     public fun get_required_proposer_stake(): u64 acquires GovernanceConfig {
         borrow_global<GovernanceConfig>(@aptos_framework).required_proposer_stake
     }
@@ -557,7 +560,7 @@ module aptos_framework::aptos_governance {
     }
 
     #[test(aptos_framework = @aptos_framework, proposer = @0x123, yes_voter = @0x234, no_voter = @345)]
-    #[expected_failure(abort_code=0x5000a)]
+    #[expected_failure(abort_code=0x5000a, location = aptos_framework::voting)]
     public entry fun test_voting_multi_step_cannot_use_single_step_resolve(
         aptos_framework: signer,
         proposer: signer,
@@ -637,7 +640,7 @@ module aptos_framework::aptos_governance {
     }
 
     #[test(aptos_framework = @aptos_framework, proposer = @0x123, voter_1 = @0x234, voter_2 = @345)]
-    #[expected_failure(abort_code = 0x10004)]
+    #[expected_failure(abort_code = 0x10004, location = aptos_framework::voting)]
     public entry fun test_cannot_double_vote(
         aptos_framework: signer,
         proposer: signer,
@@ -660,7 +663,7 @@ module aptos_framework::aptos_governance {
     }
 
     #[test(aptos_framework = @aptos_framework, proposer = @0x123, voter_1 = @0x234, voter_2 = @345)]
-    #[expected_failure(abort_code = 0x10004)]
+    #[expected_failure(abort_code = 0x10004, location = aptos_framework::voting)]
     public entry fun test_cannot_double_vote_with_different_voter_addresses(
         aptos_framework: signer,
         proposer: signer,
@@ -746,11 +749,46 @@ module aptos_framework::aptos_governance {
     }
 
     #[test(account = @0x123)]
-    #[expected_failure(abort_code = 0x50003)]
+    #[expected_failure(abort_code = 0x50003, location = aptos_framework::system_addresses)]
     public entry fun test_update_governance_config_unauthorized_should_fail(
         account: signer) acquires GovernanceConfig, GovernanceEvents {
         initialize(&account, 1, 2, 3);
         update_governance_config(&account, 10, 20, 30);
+    }
+
+    #[test(aptos_framework = @aptos_framework, proposer = @0x123, yes_voter = @0x234, no_voter = @345)]
+    public entry fun test_replace_execution_hash(
+        aptos_framework: signer,
+        proposer: signer,
+        yes_voter: signer,
+        no_voter: signer,
+    ) acquires GovernanceResponsbility, GovernanceConfig, GovernanceEvents, ApprovedExecutionHashes, VotingRecords {
+        setup_voting(&aptos_framework, &proposer, &yes_voter, &no_voter);
+
+        create_proposal_for_test(proposer, true);
+        vote(&yes_voter, signer::address_of(&yes_voter), 0, true);
+        vote(&no_voter, signer::address_of(&no_voter), 0, false);
+
+        // Add approved script hash.
+        timestamp::update_global_time_for_test(100001000000);
+        add_approved_script_hash(0);
+
+        // Resolve the proposal.
+        let execution_hash = vector::empty<u8>();
+        let next_execution_hash = vector::empty<u8>();
+        vector::push_back(&mut execution_hash, 1);
+        vector::push_back(&mut next_execution_hash, 10);
+
+        voting::resolve_proposal_v2<GovernanceProposal>(@aptos_framework, 0, next_execution_hash);
+
+        if (vector::length(&next_execution_hash) == 0) {
+            remove_approved_hash(0);
+        } else {
+            add_approved_script_hash(0)
+        };
+
+        let approved_hashes = borrow_global<ApprovedExecutionHashes>(@aptos_framework).hashes;
+        assert!(*simple_map::borrow(&approved_hashes, &0) == vector[10u8,], 1);
     }
 
     #[verify_only]

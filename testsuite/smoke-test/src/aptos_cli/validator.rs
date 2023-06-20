@@ -1,31 +1,32 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::smoke_test_environment::SwarmBuilder;
-use aptos::common::types::TransactionSummary;
-use aptos::node::analyze::analyze_validators::{AnalyzeValidators, EpochStats};
-use aptos::node::analyze::fetch_metadata::FetchMetadata;
-use aptos::test::ValidatorPerformance;
-use aptos::{account::create::DEFAULT_FUNDED_COINS, test::CliTestFramework};
+use crate::{smoke_test_environment::SwarmBuilder, test_utils::MAX_CATCH_UP_WAIT_SECS};
+use aptos::{
+    account::create::DEFAULT_FUNDED_COINS,
+    common::types::TransactionSummary,
+    node::analyze::{
+        analyze_validators::{AnalyzeValidators, EpochStats},
+        fetch_metadata::FetchMetadata,
+    },
+    test::{CliTestFramework, ValidatorPerformance},
+};
 use aptos_bitvec::BitVec;
-use aptos_crypto::ed25519::Ed25519PrivateKey;
-use aptos_crypto::{bls12381, x25519, ValidCryptoMaterialStringExt};
+use aptos_crypto::{bls12381, ed25519::Ed25519PrivateKey, x25519, ValidCryptoMaterialStringExt};
+use aptos_forge::{reconfig, LocalSwarm, NodeExt, Swarm, SwarmExt};
 use aptos_genesis::config::HostAndPort;
 use aptos_keygen::KeyGen;
 use aptos_rest_client::{Client, State};
-use aptos_types::account_config::CORE_CODE_ADDRESS;
-use aptos_types::network_address::DnsName;
-use aptos_types::on_chain_config::{
-    ConsensusConfigV1, LeaderReputationType, OnChainConsensusConfig, ProposerAndVoterConfig,
-    ProposerElectionType, ValidatorSet,
+use aptos_types::{
+    account_config::CORE_CODE_ADDRESS,
+    network_address::DnsName,
+    on_chain_config::{
+        ConsensusConfigV1, LeaderReputationType, OnChainConsensusConfig, ProposerAndVoterConfig,
+        ProposerElectionType, ValidatorSet,
+    },
+    PeerId,
 };
-use aptos_types::PeerId;
-use forge::{reconfig, LocalSwarm, NodeExt, Swarm, SwarmExt};
-use std::collections::HashMap;
-use std::convert::TryFrom;
-use std::fmt::Write;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{collections::HashMap, convert::TryFrom, fmt::Write, sync::Arc, time::Duration};
 
 #[tokio::test]
 async fn test_analyze_validators() {
@@ -160,7 +161,7 @@ async fn check_vote_to_elected(swarm: &mut LocalSwarm) -> (Option<u64>, Option<u
     for (_i, event) in info.blocks.iter().enumerate() {
         let previous_block_votes_bitvec: BitVec =
             event.event.previous_block_votes_bitvec().clone().into();
-        if first_vote.is_none() && previous_block_votes_bitvec.is_set(off_index as u16) {
+        if first_vote.is_none() && previous_block_votes_bitvec.is_set(off_index) {
             first_vote = Some(event.event.round());
         }
 
@@ -178,11 +179,14 @@ async fn test_onchain_config_change() {
         .with_init_config(Arc::new(|_, conf, _| {
             // reduce timeout, as we will have dead node during rounds
             conf.consensus.round_initial_timeout_ms = 400;
-            conf.consensus.quorum_store_poll_count = 4;
+            conf.consensus.quorum_store_poll_time_ms = 100;
             conf.api.failpoints_enabled = true;
         }))
         .with_init_genesis_config(Arc::new(|genesis_config| {
-            let OnChainConsensusConfig::V1(inner) = genesis_config.consensus_config.clone();
+            let inner = match genesis_config.consensus_config.clone() {
+                OnChainConsensusConfig::V1(inner) => inner,
+                OnChainConsensusConfig::V2(inner) => inner,
+            };
 
             let leader_reputation_type =
                 if let ProposerElectionType::LeaderReputation(leader_reputation_type) =
@@ -196,7 +200,7 @@ async fn test_onchain_config_change() {
                 LeaderReputationType::ProposerAndVoter(_) => panic!(),
                 LeaderReputationType::ProposerAndVoterV2(proposer_and_voter_config) => {
                     proposer_and_voter_config
-                }
+                },
             };
             let new_consensus_config = OnChainConsensusConfig::V1(ConsensusConfigV1 {
                 proposer_election_type: ProposerElectionType::LeaderReputation(
@@ -236,7 +240,10 @@ async fn test_onchain_config_change() {
     )
     .unwrap();
 
-    let OnChainConsensusConfig::V1(inner) = current_consensus_config;
+    let inner = match current_consensus_config {
+        OnChainConsensusConfig::V1(inner) => inner,
+        OnChainConsensusConfig::V2(inner) => inner,
+    };
     let leader_reputation_type =
         if let ProposerElectionType::LeaderReputation(leader_reputation_type) =
             inner.proposer_election_type
@@ -249,7 +256,7 @@ async fn test_onchain_config_change() {
         LeaderReputationType::ProposerAndVoterV2(_) => panic!(),
         LeaderReputationType::ProposerAndVoter(proposer_and_voter_config) => {
             proposer_and_voter_config
-        }
+        },
     };
     let new_consensus_config = OnChainConsensusConfig::V1(ConsensusConfigV1 {
         proposer_election_type: ProposerElectionType::LeaderReputation(
@@ -299,7 +306,7 @@ async fn test_onchain_config_change() {
         .await
         .unwrap();
     swarm
-        .wait_for_all_nodes_to_catchup_to_next(Duration::from_secs(30))
+        .wait_for_all_nodes_to_catchup_to_next(Duration::from_secs(MAX_CATCH_UP_WAIT_SECS))
         .await
         .unwrap();
     println!(
@@ -333,7 +340,7 @@ async fn test_onchain_config_change() {
     assert!(first_elected_new.unwrap() < 40);
 }
 
-fn generate_blob(data: &[u8]) -> String {
+pub(crate) fn generate_blob(data: &[u8]) -> String {
     let mut buf = String::new();
 
     write!(buf, "vector[").unwrap();
@@ -411,7 +418,7 @@ async fn test_large_total_stake() {
     );
 
     swarm
-        .wait_for_all_nodes_to_catchup(Duration::from_secs(20))
+        .wait_for_all_nodes_to_catchup(Duration::from_secs(MAX_CATCH_UP_WAIT_SECS))
         .await
         .unwrap();
 }
@@ -425,7 +432,7 @@ async fn test_nodes_rewards() {
         .with_init_config(Arc::new(|i, conf, genesis_stake_amount| {
             // reduce timeout, as we will have dead node during rounds
             conf.consensus.round_initial_timeout_ms = 200;
-            conf.consensus.quorum_store_poll_count = 4;
+            conf.consensus.quorum_store_poll_time_ms = 100;
             conf.api.failpoints_enabled = true;
 
             // make sure we have quorum
@@ -854,7 +861,7 @@ async fn test_join_and_leave_validator() {
         .with_init_config(Arc::new(|_i, conf, genesis_stake_amount| {
             // reduce timeout, as we will have dead node during rounds
             conf.consensus.round_initial_timeout_ms = 200;
-            conf.consensus.quorum_store_poll_count = 4;
+            conf.consensus.quorum_store_poll_time_ms = 100;
             *genesis_stake_amount = 100000;
         }))
         .with_init_genesis_config(Arc::new(|genesis_config| {
@@ -998,7 +1005,8 @@ async fn test_join_and_leave_validator() {
     gas_used += get_gas(
         cli.withdraw_stake(validator_cli_index, withdraw_stake)
             .await
-            .unwrap(),
+            .unwrap()
+            .remove(0),
     );
 
     cli.assert_account_balance_now(
@@ -1015,7 +1023,7 @@ async fn test_owner_create_and_delegate_flow() {
         .with_init_config(Arc::new(|_i, conf, genesis_stake_amount| {
             // reduce timeout, as we will have dead node during rounds
             conf.consensus.round_initial_timeout_ms = 200;
-            conf.consensus.quorum_store_poll_count = 4;
+            conf.consensus.quorum_store_poll_time_ms = 100;
             // enough for quorum
             *genesis_stake_amount = 5000000;
         }))
@@ -1046,11 +1054,12 @@ async fn test_owner_create_and_delegate_flow() {
         )
         .await
         .unwrap();
+    println!("owner CLI index: {}", owner_cli_index);
 
     cli.assert_account_balance_now(owner_cli_index, owner_initial_coins)
         .await;
 
-    // faucet can make our root LocalAccount sequence number get out of sync.
+    // Faucet can make our root LocalAccount sequence number get out of sync.
     swarm
         .chain_info()
         .resync_root_account_seq_num(&rest_client)
@@ -1070,6 +1079,7 @@ async fn test_owner_create_and_delegate_flow() {
     // Fetch amount of gas used for the above account creations
     let mut owner_gas =
         owner_initial_coins - cli.account_balance_now(owner_cli_index).await.unwrap();
+    println!("owner_gas1: {}", owner_gas);
 
     // Voter and operator start with no coins
     // Owner needs to send small amount of coins to operator and voter, to create their accounts and so they have enough for gas fees.
@@ -1077,7 +1087,7 @@ async fn test_owner_create_and_delegate_flow() {
         .transfer_coins(owner_cli_index, voter_cli_index, voter_initial_coins, None)
         .await
         .unwrap()
-        .gas_used;
+        .octa_spent();
     owner_gas += cli
         .transfer_coins(
             owner_cli_index,
@@ -1087,7 +1097,7 @@ async fn test_owner_create_and_delegate_flow() {
         )
         .await
         .unwrap()
-        .gas_used;
+        .octa_spent();
 
     cli.assert_account_balance_now(
         owner_cli_index,
@@ -1112,6 +1122,7 @@ async fn test_owner_create_and_delegate_flow() {
         .unwrap(),
     );
 
+    println!("before4");
     cli.assert_account_balance_now(
         owner_cli_index,
         owner_initial_coins
@@ -1121,6 +1132,7 @@ async fn test_owner_create_and_delegate_flow() {
             - owner_gas,
     )
     .await;
+    println!("after4");
 
     assert_validator_set_sizes(&cli, 1, 0, 0).await;
     assert_eq!(
@@ -1155,8 +1167,10 @@ async fn test_owner_create_and_delegate_flow() {
         .unwrap(),
     );
 
+    println!("before5");
     cli.assert_account_balance_now(operator_cli_index, operator_initial_coins - operator_gas)
         .await;
+    println!("after5");
 
     cli.join_validator_set(operator_cli_index, Some(owner_cli_index))
         .await
@@ -1239,7 +1253,7 @@ fn dns_name(addr: &str) -> DnsName {
     DnsName::try_from(addr.to_string()).unwrap()
 }
 
-struct ValidatorNodeKeys {
+pub struct ValidatorNodeKeys {
     account_private_key: Ed25519PrivateKey,
     network_private_key: x25519::PrivateKey,
     consensus_private_key: bls12381::PrivateKey,
@@ -1267,7 +1281,7 @@ impl ValidatorNodeKeys {
     }
 }
 
-async fn init_validator_account(
+pub async fn init_validator_account(
     cli: &mut CliTestFramework,
     keygen: &mut KeyGen,
     amount: Option<u64>,

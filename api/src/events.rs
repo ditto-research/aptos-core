@@ -1,24 +1,30 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::accept_type::AcceptType;
-use crate::accounts::Account;
-use crate::context::Context;
-use crate::failpoint::fail_point_poem;
-use crate::page::Page;
-use crate::response::BadRequestError;
-use crate::response::{
-    BasicErrorWith404, BasicResponse, BasicResponseStatus, BasicResultWith404, InternalError,
+use crate::{
+    accept_type::AcceptType,
+    accounts::Account,
+    context::Context,
+    failpoint::fail_point_poem,
+    page::Page,
+    response::{
+        BadRequestError, BasicErrorWith404, BasicResponse, BasicResponseStatus, BasicResultWith404,
+        InternalError,
+    },
+    ApiTags,
 };
-use crate::ApiTags;
 use anyhow::Context as AnyhowContext;
 use aptos_api_types::{
     verify_field_identifier, Address, AptosErrorCode, AsConverter, IdentifierWrapper, LedgerInfo,
     MoveStructTag, VerifyInputWithRecursion, VersionedEvent, U64,
 };
 use aptos_types::event::EventKey;
-use poem_openapi::param::Query;
-use poem_openapi::{param::Path, OpenApi};
+use aptos_vm::data_cache::AsMoveResolver;
+use poem_openapi::{
+    param::{Path, Query},
+    OpenApi,
+};
 use std::sync::Arc;
 
 pub struct EventsApi {
@@ -70,7 +76,7 @@ impl EventsApi {
 
         // Ensure that account exists
         let account = Account::new(self.context.clone(), address.0, None, None, None)?;
-        account.get_account_resource()?;
+        account.verify_account_or_object_resource()?;
         self.list(
             account.latest_ledger_info,
             accept_type,
@@ -166,8 +172,10 @@ impl EventsApi {
 
         match accept_type {
             AcceptType::Json => {
-                let resolver = self.context.move_resolver_poem(&latest_ledger_info)?;
-                let events = resolver
+                let events = self
+                    .context
+                    .latest_state_view_poem(&latest_ledger_info)?
+                    .as_move_resolver()
                     .as_converter(self.context.db.clone())
                     .try_into_versioned_events(&events)
                     .context("Failed to convert events from storage into response")
@@ -180,10 +188,10 @@ impl EventsApi {
                     })?;
 
                 BasicResponse::try_from_json((events, &latest_ledger_info, BasicResponseStatus::Ok))
-            }
+            },
             AcceptType::Bcs => {
                 BasicResponse::try_from_bcs((events, &latest_ledger_info, BasicResponseStatus::Ok))
-            }
+            },
         }
     }
 }

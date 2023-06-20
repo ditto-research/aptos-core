@@ -1,31 +1,30 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::common::native_coin;
-use crate::types::{
-    AccountBalanceRequest, AccountBalanceResponse, AccountIdentifier, BlockRequest, BlockResponse,
-    ConstructionCombineRequest, ConstructionCombineResponse, ConstructionDeriveRequest,
-    ConstructionDeriveResponse, ConstructionHashRequest, ConstructionMetadata,
-    ConstructionMetadataRequest, ConstructionMetadataResponse, ConstructionParseRequest,
-    ConstructionParseResponse, ConstructionPayloadsRequest, ConstructionPayloadsResponse,
-    ConstructionPreprocessRequest, ConstructionPreprocessResponse, ConstructionSubmitRequest,
-    ConstructionSubmitResponse, Error, MetadataRequest, NetworkIdentifier, NetworkListResponse,
-    NetworkOptionsResponse, NetworkRequest, NetworkStatusResponse, Operation, PreprocessMetadata,
-    PublicKey, Signature, SignatureType, TransactionIdentifier, TransactionIdentifierResponse,
+use crate::{
+    common::native_coin,
+    types::{
+        AccountBalanceRequest, AccountBalanceResponse, AccountIdentifier, BlockRequest,
+        BlockResponse, ConstructionCombineRequest, ConstructionCombineResponse,
+        ConstructionDeriveRequest, ConstructionDeriveResponse, ConstructionHashRequest,
+        ConstructionMetadata, ConstructionMetadataRequest, ConstructionMetadataResponse,
+        ConstructionParseRequest, ConstructionParseResponse, ConstructionPayloadsRequest,
+        ConstructionPayloadsResponse, ConstructionPreprocessRequest,
+        ConstructionPreprocessResponse, ConstructionSubmitRequest, ConstructionSubmitResponse,
+        Error, MetadataRequest, NetworkIdentifier, NetworkListResponse, NetworkOptionsResponse,
+        NetworkRequest, NetworkStatusResponse, Operation, PreprocessMetadata, PublicKey, Signature,
+        SignatureType, TransactionIdentifier, TransactionIdentifierResponse,
+    },
 };
 use anyhow::anyhow;
-use aptos_crypto::ed25519::Ed25519PrivateKey;
-use aptos_crypto::SigningKey;
-use aptos_crypto::{PrivateKey, ValidCryptoMaterialStringExt};
+use aptos_crypto::{
+    ed25519::Ed25519PrivateKey, PrivateKey, SigningKey, ValidCryptoMaterialStringExt,
+};
 use aptos_rest_client::aptos_api_types::mime_types::JSON;
-use aptos_types::account_address::AccountAddress;
-use aptos_types::transaction::RawTransaction;
+use aptos_types::{account_address::AccountAddress, transaction::RawTransaction};
 use reqwest::{header::CONTENT_TYPE, Client as ReqwestClient};
 use serde::{de::DeserializeOwned, Serialize};
-use std::collections::HashMap;
-use std::convert::TryInto;
-use std::fmt::Debug;
-use std::str::FromStr;
+use std::{collections::HashMap, convert::TryInto, fmt::Debug, str::FromStr};
 use url::Url;
 
 /// Client for testing & interacting with a Rosetta service
@@ -349,6 +348,84 @@ impl RosettaClient {
         .await
     }
 
+    pub async fn unlock_stake(
+        &self,
+        network_identifier: &NetworkIdentifier,
+        private_key: &Ed25519PrivateKey,
+        operator: Option<AccountAddress>,
+        amount: Option<u64>,
+        expiry_time_secs: u64,
+        sequence_number: Option<u64>,
+        max_gas: Option<u64>,
+        gas_unit_price: Option<u64>,
+    ) -> anyhow::Result<TransactionIdentifier> {
+        let sender = self
+            .get_account_address(network_identifier.clone(), private_key)
+            .await?;
+        let mut keys = HashMap::new();
+        keys.insert(sender, private_key);
+
+        let operations = vec![Operation::unlock_stake(
+            0,
+            None,
+            sender,
+            operator.map(AccountIdentifier::base_account),
+            amount,
+        )];
+
+        self.submit_operations(
+            sender,
+            network_identifier.clone(),
+            &keys,
+            operations,
+            expiry_time_secs,
+            sequence_number,
+            max_gas,
+            gas_unit_price,
+            operator.is_none(),
+        )
+        .await
+    }
+
+    pub async fn distribute_staking_rewards(
+        &self,
+        network_identifier: &NetworkIdentifier,
+        private_key: &Ed25519PrivateKey,
+        operator: AccountAddress,
+        staker: AccountAddress,
+        expiry_time_secs: u64,
+        sequence_number: Option<u64>,
+        max_gas: Option<u64>,
+        gas_unit_price: Option<u64>,
+    ) -> anyhow::Result<TransactionIdentifier> {
+        let sender = self
+            .get_account_address(network_identifier.clone(), private_key)
+            .await?;
+        let mut keys = HashMap::new();
+        keys.insert(sender, private_key);
+
+        let operations = vec![Operation::distribute_staking_rewards(
+            0,
+            None,
+            sender,
+            AccountIdentifier::base_account(operator),
+            AccountIdentifier::base_account(staker),
+        )];
+
+        self.submit_operations(
+            sender,
+            network_identifier.clone(),
+            &keys,
+            operations,
+            expiry_time_secs,
+            sequence_number,
+            max_gas,
+            gas_unit_price,
+            false,
+        )
+        .await
+    }
+
     pub async fn create_stake_pool(
         &self,
         network_identifier: &NetworkIdentifier,
@@ -356,6 +433,7 @@ impl RosettaClient {
         new_operator: Option<AccountAddress>,
         new_voter: Option<AccountAddress>,
         stake_amount: Option<u64>,
+        commission_percentage: Option<u64>,
         expiry_time_secs: u64,
         sequence_number: Option<u64>,
         max_gas: Option<u64>,
@@ -376,6 +454,7 @@ impl RosettaClient {
             new_operator,
             new_voter,
             stake_amount,
+            commission_percentage,
         )];
 
         self.submit_operations(
@@ -388,6 +467,124 @@ impl RosettaClient {
             max_gas,
             gas_unit_price,
             true,
+        )
+        .await
+    }
+
+    pub async fn add_delegated_stake(
+        &self,
+        network_identifier: &NetworkIdentifier,
+        private_key: &Ed25519PrivateKey,
+        pool_address: AccountAddress,
+        amount: Option<u64>,
+        expiry_time_secs: u64,
+        sequence_number: Option<u64>,
+        max_gas: Option<u64>,
+        gas_unit_price: Option<u64>,
+    ) -> anyhow::Result<TransactionIdentifier> {
+        let delegator = self
+            .get_account_address(network_identifier.clone(), private_key)
+            .await?;
+
+        let mut keys = HashMap::new();
+        keys.insert(delegator, private_key);
+
+        let operations = vec![Operation::add_delegated_stake(
+            0,
+            None,
+            delegator,
+            AccountIdentifier::base_account(pool_address),
+            amount,
+        )];
+
+        self.submit_operations(
+            delegator,
+            network_identifier.clone(),
+            &keys,
+            operations,
+            expiry_time_secs,
+            sequence_number,
+            max_gas,
+            gas_unit_price,
+            true,
+        )
+        .await
+    }
+
+    pub async fn unlock_delegated_stake(
+        &self,
+        network_identifier: &NetworkIdentifier,
+        private_key: &Ed25519PrivateKey,
+        pool_address: AccountAddress,
+        amount: Option<u64>,
+        expiry_time_secs: u64,
+        sequence_number: Option<u64>,
+        max_gas: Option<u64>,
+        gas_unit_price: Option<u64>,
+    ) -> anyhow::Result<TransactionIdentifier> {
+        let delegator = self
+            .get_account_address(network_identifier.clone(), private_key)
+            .await?;
+        let mut keys = HashMap::new();
+        keys.insert(delegator, private_key);
+
+        let operations = vec![Operation::unlock_delegated_stake(
+            0,
+            None,
+            delegator,
+            AccountIdentifier::base_account(pool_address),
+            amount,
+        )];
+
+        self.submit_operations(
+            delegator,
+            network_identifier.clone(),
+            &keys,
+            operations,
+            expiry_time_secs,
+            sequence_number,
+            max_gas,
+            gas_unit_price,
+            true,
+        )
+        .await
+    }
+
+    pub async fn withdraw_undelegated_stake(
+        &self,
+        network_identifier: &NetworkIdentifier,
+        private_key: &Ed25519PrivateKey,
+        pool_address: AccountAddress,
+        amount: Option<u64>,
+        expiry_time_secs: u64,
+        sequence_number: Option<u64>,
+        max_gas: Option<u64>,
+        gas_unit_price: Option<u64>,
+    ) -> anyhow::Result<TransactionIdentifier> {
+        let sender = self
+            .get_account_address(network_identifier.clone(), private_key)
+            .await?;
+        let mut keys = HashMap::new();
+        keys.insert(sender, private_key);
+
+        let operations = vec![Operation::withdraw_undelegated_stake(
+            0,
+            None,
+            sender,
+            AccountIdentifier::base_account(pool_address),
+            amount,
+        )];
+
+        self.submit_operations(
+            sender,
+            network_identifier.clone(),
+            &keys,
+            operations,
+            expiry_time_secs,
+            sequence_number,
+            max_gas,
+            gas_unit_price,
+            false,
         )
         .await
     }

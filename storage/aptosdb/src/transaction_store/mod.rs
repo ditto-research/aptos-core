@@ -1,28 +1,29 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 //! This file defines transaction store APIs that are related to committed signed transactions.
 
-use crate::transaction_accumulator::TransactionAccumulatorSchema;
-use crate::utils::iterators::AccountTransactionVersionIter;
-use crate::utils::iterators::ExpectContinuousVersions;
 use crate::{
     errors::AptosDbError,
+    ledger_db::LedgerDb,
     schema::{
         transaction::TransactionSchema, transaction_by_account::TransactionByAccountSchema,
         transaction_by_hash::TransactionByHashSchema, write_set::WriteSetSchema,
     },
+    transaction_accumulator::TransactionAccumulatorSchema,
     transaction_info::TransactionInfoSchema,
+    utils::iterators::{AccountTransactionVersionIter, ExpectContinuousVersions},
 };
 use anyhow::{ensure, format_err, Result};
 use aptos_crypto::{hash::CryptoHash, HashValue};
+use aptos_schemadb::{ReadOptions, SchemaBatch};
 use aptos_types::{
     account_address::AccountAddress,
     proof::position::Position,
     transaction::{Transaction, Version},
     write_set::WriteSet,
 };
-use schemadb::{ReadOptions, SchemaBatch, DB};
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -30,12 +31,12 @@ mod test;
 
 #[derive(Clone, Debug)]
 pub struct TransactionStore {
-    db: Arc<DB>,
+    ledger_db: Arc<LedgerDb>,
 }
 
 impl TransactionStore {
-    pub fn new(db: Arc<DB>) -> Self {
-        Self { db }
+    pub fn new(ledger_db: Arc<LedgerDb>) -> Self {
+        Self { ledger_db }
     }
 
     /// Gets the version of a transaction by the sender `address` and `sequence_number`.
@@ -46,7 +47,8 @@ impl TransactionStore {
         ledger_version: Version,
     ) -> Result<Option<Version>> {
         if let Some(version) = self
-            .db
+            .ledger_db
+            .transaction_db()
             .get::<TransactionByAccountSchema>(&(address, sequence_number))?
         {
             if version <= ledger_version {
@@ -63,10 +65,16 @@ impl TransactionStore {
         hash: &HashValue,
         ledger_version: Version,
     ) -> Result<Option<Version>> {
-        Ok(match self.db.get::<TransactionByHashSchema>(hash)? {
-            Some(version) if version <= ledger_version => Some(version),
-            _ => None,
-        })
+        Ok(
+            match self
+                .ledger_db
+                .transaction_db()
+                .get::<TransactionByHashSchema>(hash)?
+            {
+                Some(version) if version <= ledger_version => Some(version),
+                _ => None,
+            },
+        )
     }
 
     /// Gets an iterator that yields `(sequence_number, version)` for each
@@ -83,7 +91,8 @@ impl TransactionStore {
         ledger_version: Version,
     ) -> Result<AccountTransactionVersionIter> {
         let mut iter = self
-            .db
+            .ledger_db
+            .transaction_db()
             .iter::<TransactionByAccountSchema>(ReadOptions::default())?;
         iter.seek(&(address, min_seq_num))?;
         Ok(AccountTransactionVersionIter::new(
@@ -98,7 +107,8 @@ impl TransactionStore {
 
     /// Get signed transaction given `version`
     pub fn get_transaction(&self, version: Version) -> Result<Transaction> {
-        self.db
+        self.ledger_db
+            .transaction_db()
             .get::<TransactionSchema>(&version)?
             .ok_or_else(|| AptosDbError::NotFound(format!("Txn {}", version)).into())
     }
@@ -109,7 +119,10 @@ impl TransactionStore {
         start_version: Version,
         num_transactions: usize,
     ) -> Result<impl Iterator<Item = Result<Transaction>> + '_> {
-        let mut iter = self.db.iter::<TransactionSchema>(ReadOptions::default())?;
+        let mut iter = self
+            .ledger_db
+            .transaction_db()
+            .iter::<TransactionSchema>(ReadOptions::default())?;
         iter.seek(&start_version)?;
         iter.expect_continuous_versions(start_version, num_transactions)
     }
@@ -120,7 +133,10 @@ impl TransactionStore {
         start_version: Version,
         num_transactions: usize,
     ) -> Result<impl Iterator<Item = Result<WriteSet>> + '_> {
-        let mut iter = self.db.iter::<WriteSetSchema>(ReadOptions::default())?;
+        let mut iter = self
+            .ledger_db
+            .write_set_db()
+            .iter::<WriteSetSchema>(ReadOptions::default())?;
         iter.seek(&start_version)?;
         iter.expect_continuous_versions(start_version, num_transactions)
     }
@@ -130,9 +146,9 @@ impl TransactionStore {
         &self,
         version: Version,
         transaction: &Transaction,
-        batch: &mut SchemaBatch,
+        batch: &SchemaBatch,
     ) -> Result<()> {
-        if let Transaction::UserTransaction(txn) = transaction {
+        if let Some(txn) = transaction.try_as_signed_user_txn() {
             batch.put::<TransactionByAccountSchema>(
                 &(txn.sender(), txn.sequence_number()),
                 &version,
@@ -146,9 +162,12 @@ impl TransactionStore {
 
     /// Get executed transaction vm output given `version`
     pub fn get_write_set(&self, version: Version) -> Result<WriteSet> {
-        self.db.get::<WriteSetSchema>(&version)?.ok_or_else(|| {
-            AptosDbError::NotFound(format!("WriteSet at version {}", version)).into()
-        })
+        self.ledger_db
+            .write_set_db()
+            .get::<WriteSetSchema>(&version)?
+            .ok_or_else(|| {
+                AptosDbError::NotFound(format!("WriteSet at version {}", version)).into()
+            })
     }
 
     /// Get write sets in `[begin_version, end_version)` half-open range.
@@ -169,7 +188,10 @@ impl TransactionStore {
             end_version
         );
 
-        let mut iter = self.db.iter::<WriteSetSchema>(Default::default())?;
+        let mut iter = self
+            .ledger_db
+            .write_set_db()
+            .iter::<WriteSetSchema>(Default::default())?;
         iter.seek(&begin_version)?;
 
         let mut ret = Vec::with_capacity((end_version - begin_version) as usize);
@@ -195,7 +217,7 @@ impl TransactionStore {
         &self,
         version: Version,
         write_set: &WriteSet,
-        batch: &mut SchemaBatch,
+        batch: &SchemaBatch,
     ) -> Result<()> {
         batch.put::<WriteSetSchema>(&version, write_set)
     }
@@ -204,7 +226,7 @@ impl TransactionStore {
     pub fn prune_transaction_by_hash(
         &self,
         transactions: &[Transaction],
-        db_batch: &mut SchemaBatch,
+        db_batch: &SchemaBatch,
     ) -> Result<()> {
         for transaction in transactions {
             db_batch.delete::<TransactionByHashSchema>(&transaction.hash())?;
@@ -216,10 +238,10 @@ impl TransactionStore {
     pub fn prune_transaction_by_account(
         &self,
         transactions: &[Transaction],
-        db_batch: &mut SchemaBatch,
+        db_batch: &SchemaBatch,
     ) -> Result<()> {
         for transaction in transactions {
-            if let Transaction::UserTransaction(txn) = transaction {
+            if let Some(txn) = transaction.try_as_signed_user_txn() {
                 db_batch
                     .delete::<TransactionByAccountSchema>(&(txn.sender(), txn.sequence_number()))?;
             }
@@ -232,7 +254,7 @@ impl TransactionStore {
         &self,
         begin: Version,
         end: Version,
-        db_batch: &mut SchemaBatch,
+        db_batch: &SchemaBatch,
     ) -> Result<()> {
         for version in begin..end {
             db_batch.delete::<TransactionSchema>(&version)?;
@@ -245,7 +267,7 @@ impl TransactionStore {
         &self,
         begin: Version,
         end: Version,
-        db_batch: &mut SchemaBatch,
+        db_batch: &SchemaBatch,
     ) -> Result<()> {
         for version in begin..end {
             db_batch.delete::<TransactionInfoSchema>(&version)?;
@@ -267,7 +289,7 @@ impl TransactionStore {
         &self,
         begin: Version,
         end: Version,
-        db_batch: &mut SchemaBatch,
+        db_batch: &SchemaBatch,
     ) -> Result<()> {
         for version_to_delete in begin..end {
             // The even version will be pruned in the iteration of version + 1.
@@ -317,7 +339,7 @@ impl TransactionStore {
         &self,
         begin: Version,
         end: Version,
-        db_batch: &mut SchemaBatch,
+        db_batch: &SchemaBatch,
     ) -> Result<()> {
         for version in begin..end {
             db_batch.delete::<WriteSetSchema>(&version)?;

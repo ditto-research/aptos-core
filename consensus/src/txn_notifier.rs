@@ -1,12 +1,12 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{error::MempoolError, monitor};
 use anyhow::{format_err, Result};
 use aptos_consensus_types::common::RejectedTransactionSummary;
+use aptos_executor_types::StateComputeResult;
 use aptos_mempool::QuorumStoreRequest;
 use aptos_types::transaction::{SignedTransaction, TransactionStatus};
-use executor_types::StateComputeResult;
 use futures::channel::{mpsc, oneshot};
 use itertools::Itertools;
 use std::time::Duration;
@@ -70,11 +70,12 @@ impl TxnNotifier for MempoolNotifier {
         }
         let user_txn_status = &compute_status[1..txns.len() + 1];
         for (txn, status) in txns.iter().zip_eq(user_txn_status) {
-            if let TransactionStatus::Discard(_) = status {
+            if let TransactionStatus::Discard(reason) = status {
                 rejected_txns.push(RejectedTransactionSummary {
                     sender: txn.sender(),
                     sequence_number: txn.sequence_number(),
                     hash: txn.clone().committed_hash(),
+                    reason: *reason,
                 });
             }
         }

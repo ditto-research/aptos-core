@@ -1,13 +1,14 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use forge::{
+use aptos_forge::{
     forge_main,
     success_criteria::{StateProgressThreshold, SuccessCriteria},
     EmitJobMode, EmitJobRequest, ForgeConfig, InitialVersion, LocalFactory, Options, Result,
 };
+use aptos_testcases::performance_test::PerformanceBenchmark;
 use std::num::NonZeroUsize;
-use testcases::performance_test::PerformanceBenchmark;
 
 fn main() -> Result<()> {
     ::aptos_logger::Logger::init_for_testing();
@@ -15,7 +16,7 @@ fn main() -> Result<()> {
     let tests = ForgeConfig::default()
         .with_initial_validator_count(NonZeroUsize::new(2).unwrap())
         .with_initial_version(InitialVersion::Newest)
-        .with_network_tests(vec![&PerformanceBenchmark])
+        .add_network_test(PerformanceBenchmark)
         .with_emit_job(
             EmitJobRequest::default()
                 .mode(EmitJobMode::ConstTps { tps: 30 })
@@ -29,5 +30,5 @@ fn main() -> Result<()> {
         ));
 
     let options = Options::from_args();
-    forge_main(tests, LocalFactory::from_workspace()?, &options)
+    forge_main(tests, LocalFactory::from_workspace(None)?, &options)
 }

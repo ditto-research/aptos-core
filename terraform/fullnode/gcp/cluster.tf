@@ -60,10 +60,6 @@ resource "google_container_cluster" "aptos" {
     provider = "CALICO"
   }
 
-  pod_security_policy_config {
-    enabled = true
-  }
-
   cluster_autoscaling {
     enabled = var.gke_enable_node_autoprovisioning
 
@@ -78,6 +74,10 @@ resource "google_container_cluster" "aptos" {
         maximum       = resource_limits.value
       }
     }
+    auto_provisioning_defaults {
+      oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
+      service_account = google_service_account.gke.email
+    }
   }
 }
 
@@ -91,7 +91,7 @@ resource "google_container_node_pool" "fullnodes" {
   node_config {
     machine_type    = var.machine_type
     image_type      = "COS_CONTAINERD"
-    disk_size_gb    = 100
+    disk_size_gb    = var.instance_disk_size_gb
     service_account = google_service_account.gke.email
     tags            = ["fullnodes"]
 

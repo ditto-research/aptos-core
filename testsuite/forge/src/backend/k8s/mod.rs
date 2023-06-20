@@ -1,30 +1,33 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{Factory, GenesisConfig, GenesisConfigFn, NodeConfigFn, Result, Swarm, Version};
 use anyhow::bail;
 use aptos_logger::info;
 use rand::rngs::StdRng;
-use std::time::Duration;
-use std::{convert::TryInto, num::NonZeroUsize};
+use std::{convert::TryInto, num::NonZeroUsize, time::Duration};
 
 pub mod chaos;
 mod cluster_helper;
 pub mod constants;
+mod fullnode;
 pub mod kube_api;
 pub mod node;
 pub mod prometheus;
 mod stateful_set;
 mod swarm;
 
+use aptos_sdk::crypto::ed25519::ED25519_PRIVATE_KEY_LENGTH;
 pub use cluster_helper::*;
 pub use constants::*;
+pub use fullnode::*;
+#[cfg(test)]
+pub use kube_api::mocks::*;
 pub use kube_api::*;
 pub use node::K8sNode;
 pub use stateful_set::*;
 pub use swarm::*;
-
-use aptos_sdk::crypto::ed25519::ED25519_PRIVATE_KEY_LENGTH;
 
 pub struct K8sFactory {
     root_key: [u8; ED25519_PRIVATE_KEY_LENGTH],
@@ -53,16 +56,16 @@ impl K8sFactory {
         match kube_namespace.as_str() {
             "default" => {
                 info!("Using the default kubernetes namespace");
-            }
+            },
             s if s.starts_with("forge") => {
                 info!("Using forge namespace: {}", s);
-            }
+            },
             _ => {
                 bail!(
                     "Invalid kubernetes namespace provided: {}. Use forge-*",
                     kube_namespace
                 );
-            }
+            },
         }
 
         Ok(Self {
@@ -99,20 +102,21 @@ impl Factory for K8sFactory {
         cleanup_duration: Duration,
         genesis_config_fn: Option<GenesisConfigFn>,
         node_config_fn: Option<NodeConfigFn>,
+        existing_db_tag: Option<String>,
     ) -> Result<Box<dyn Swarm>> {
         let genesis_modules_path = match genesis_config {
             Some(config) => match config {
                 GenesisConfig::Bundle(_) => {
                     bail!("k8s forge backend does not support raw bytes as genesis modules. please specify a path instead")
-                }
+                },
                 GenesisConfig::Path(path) => Some(path.clone()),
             },
             None => None,
         };
 
-        let kube_client = create_k8s_client().await;
-        let (validators, fullnodes) = if self.reuse {
-            match collect_running_nodes(
+        let kube_client = create_k8s_client().await?;
+        let (new_era, validators, fullnodes) = if self.reuse {
+            let (validators, fullnodes) = match collect_running_nodes(
                 &kube_client,
                 self.kube_namespace.clone(),
                 self.use_port_forward,
@@ -123,14 +127,32 @@ impl Factory for K8sFactory {
                 Ok(res) => res,
                 Err(e) => {
                     bail!(e);
-                }
-            }
+                },
+            };
+            let new_era = None; // TODO: get the actual era
+            (new_era, validators, fullnodes)
         } else {
             // clear the cluster of resources
-            delete_k8s_resources(kube_client, &self.kube_namespace).await?;
+            delete_k8s_resources(kube_client.clone(), &self.kube_namespace).await?;
             // create the forge-management configmap before installing anything
             create_management_configmap(self.kube_namespace.clone(), self.keep, cleanup_duration)
                 .await?;
+            if let Some(existing_db_tag) = existing_db_tag {
+                // TODO(prod-eng): For now we are managing PVs out of forge, and bind them manually
+                // with the volume. Going forward we should consider automate this process.
+
+                // The previously claimed PVs are in Released stage once the corresponding PVC is
+                // gone. We reset its status to Available so they can be reused later.
+                reset_persistent_volumes(&kube_client).await?;
+
+                // We return early here if there are not enough PVs to claim.
+                check_persistent_volumes(
+                    kube_client,
+                    num_validators.get() + num_fullnodes,
+                    existing_db_tag,
+                )
+                .await?;
+            }
             // try installing testnet resources, but clean up if it fails
             match install_testnet_resources(
                 self.kube_namespace.clone(),
@@ -146,11 +168,11 @@ impl Factory for K8sFactory {
             )
             .await
             {
-                Ok(res) => res,
+                Ok(res) => (Some(res.0), res.1, res.2),
                 Err(e) => {
                     uninstall_testnet_resources(self.kube_namespace.clone()).await?;
                     bail!(e);
-                }
+                },
             }
         };
 
@@ -162,6 +184,8 @@ impl Factory for K8sFactory {
             validators,
             fullnodes,
             self.keep,
+            new_era,
+            self.use_port_forward,
         )
         .await
         .unwrap();

@@ -1,4 +1,4 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{assert_abort, assert_success, tests::common, MoveHarness};
@@ -24,5 +24,5 @@ fn type_too_large() {
 
     // The abort code is NFE_BCS_SERIALIZATION_FAILURE = 0x1c5, since the actual VM error
     // for TOO_MANY_TYPE_NODES is hidden by the bcs serializer and turned into this generic error.
-    assert_abort!(result, 0x1c5);
+    assert_abort!(result, 0x1C5);
 }

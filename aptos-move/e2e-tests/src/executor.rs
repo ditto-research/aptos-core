@@ -1,15 +1,8 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 //! Support for running the VM to execute and verify transactions.
-
-use serde::Serialize;
-use std::{
-    env,
-    fs::{self, OpenOptions},
-    io::Write,
-    path::{Path, PathBuf},
-};
 
 use crate::{
     account::{Account, AccountData},
@@ -19,22 +12,29 @@ use crate::{
     },
     golden_outputs::GoldenOutputs,
 };
+use anyhow::Error;
 use aptos_bitvec::BitVec;
 use aptos_crypto::HashValue;
-use aptos_gas::{AbstractValueSizeGasParameters, NativeGasParameters, LATEST_GAS_FEATURE_VERSION};
+use aptos_framework::ReleaseBundle;
+use aptos_gas::{
+    AbstractValueSizeGasParameters, ChangeSetConfigs, NativeGasParameters,
+    LATEST_GAS_FEATURE_VERSION,
+};
 use aptos_keygen::KeyGen;
-use aptos_state_view::StateView;
-use aptos_types::chain_id::ChainId;
-use aptos_types::on_chain_config::{FeatureFlag, Features};
+use aptos_state_view::TStateView;
 use aptos_types::{
     access_path::AccessPath,
     account_config::{
         new_block_event_key, AccountResource, CoinInfoResource, CoinStoreResource, NewBlockEvent,
         CORE_CODE_ADDRESS,
     },
+    block_executor::partitioner::BlockExecutorTransactions,
     block_metadata::BlockMetadata,
-    on_chain_config::{OnChainConfig, ValidatorSet, Version},
-    state_store::state_key::StateKey,
+    chain_id::ChainId,
+    on_chain_config::{
+        Features, OnChainConfig, TimedFeatureOverride, TimedFeatures, ValidatorSet, Version,
+    },
+    state_store::{state_key::StateKey, state_value::StateValue},
     transaction::{
         ExecutionStatus, SignedTransaction, Transaction, TransactionOutput, TransactionStatus,
         VMValidatorResult,
@@ -48,16 +48,22 @@ use aptos_vm::{
     move_vm_ext::{MoveVmExt, SessionId},
     AptosVM, VMExecutor, VMValidator,
 };
-use framework::ReleaseBundle;
+use aptos_vm_genesis::{generate_genesis_change_set_for_testing_with_count, GenesisOptions};
 use move_core_types::{
     account_address::AccountAddress,
     identifier::Identifier,
-    language_storage::{ModuleId, ResourceKey, TypeTag},
+    language_storage::{ModuleId, TypeTag},
     move_resource::MoveResource,
 };
 use move_vm_types::gas::UnmeteredGasMeter;
-use num_cpus;
-use vm_genesis::{generate_genesis_change_set_for_testing_with_count, GenesisOptions};
+use serde::Serialize;
+use std::{
+    env,
+    fs::{self, OpenOptions},
+    io::Write,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 static RNG_SEED: [u8; 32] = [9u8; 32];
 
@@ -77,9 +83,9 @@ pub type TraceSeqMapping = (usize, Vec<usize>, Vec<usize>);
 /// Provides an environment to run a VM instance.
 ///
 /// This struct is a mock in-memory implementation of the Aptos executor.
-#[derive(Debug)]
 pub struct FakeExecutor {
     data_store: FakeDataStore,
+    executor_thread_pool: Arc<rayon::ThreadPool>,
     block_time: u64,
     executed_output: Option<GoldenOutputs>,
     trace_dir: Option<PathBuf>,
@@ -87,13 +93,21 @@ pub struct FakeExecutor {
     no_parallel_exec: bool,
     features: Features,
     chain_id: u8,
+    aggregator_enabled: bool,
 }
 
 impl FakeExecutor {
     /// Creates an executor from a genesis [`WriteSet`].
     pub fn from_genesis(write_set: &WriteSet, chain_id: ChainId) -> Self {
+        let executor_thread_pool = Arc::new(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(num_cpus::get())
+                .build()
+                .unwrap(),
+        );
         let mut executor = FakeExecutor {
             data_store: FakeDataStore::default(),
+            executor_thread_pool,
             block_time: 0,
             executed_output: None,
             trace_dir: None,
@@ -101,11 +115,16 @@ impl FakeExecutor {
             no_parallel_exec: false,
             features: Features::default(),
             chain_id: chain_id.id(),
+            aggregator_enabled: true,
         };
         executor.apply_write_set(write_set);
         // As a set effect, also allow module bundle txns. TODO: Remove
         aptos_vm::aptos_vm::allow_module_bundle_for_test();
         executor
+    }
+
+    pub fn set_aggregator_enabled(&mut self, aggregator_enabled: bool) {
+        self.aggregator_enabled = aggregator_enabled;
     }
 
     /// Configure this executor to not use parallel execution.
@@ -144,10 +163,21 @@ impl FakeExecutor {
         )
     }
 
+    pub fn data_store(&self) -> &FakeDataStore {
+        &self.data_store
+    }
+
     /// Creates an executor in which no genesis state has been applied yet.
     pub fn no_genesis() -> Self {
+        let executor_thread_pool = Arc::new(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(num_cpus::get())
+                .build()
+                .unwrap(),
+        );
         FakeExecutor {
             data_store: FakeDataStore::default(),
+            executor_thread_pool,
             block_time: 0,
             executed_output: None,
             trace_dir: None,
@@ -155,6 +185,7 @@ impl FakeExecutor {
             no_parallel_exec: false,
             features: Features::default(),
             chain_id: ChainId::test().id(),
+            aggregator_enabled: true,
         }
     }
 
@@ -222,7 +253,7 @@ impl FakeExecutor {
 
     /// Creates fresh genesis from the framework passed in.
     pub fn custom_genesis(framework: &ReleaseBundle, validator_accounts: Option<usize>) -> Self {
-        let genesis = vm_genesis::generate_test_genesis(framework, validator_accounts);
+        let genesis = aptos_vm_genesis::generate_test_genesis(framework, validator_accounts);
         Self::from_genesis(genesis.0.write_set(), ChainId::test())
     }
 
@@ -281,20 +312,22 @@ impl FakeExecutor {
         self.data_store.add_module(module_id, module_blob)
     }
 
-    /// Reads the resource [`Value`] for an account from this executor's data store.
+    /// Reads the resource `Value` for an account from this executor's data store.
     pub fn read_account_resource(&self, account: &Account) -> Option<AccountResource> {
         self.read_account_resource_at_address(account.address())
     }
 
     pub fn read_resource<T: MoveResource>(&self, addr: &AccountAddress) -> Option<T> {
-        let ap = AccessPath::resource_access_path(ResourceKey::new(*addr, T::struct_tag()));
-        let data_blob = StateView::get_state_value(&self.data_store, &StateKey::AccessPath(ap))
-            .expect("account must exist in data store")
-            .unwrap_or_else(|| panic!("Can't fetch {} resource for {}", T::STRUCT_NAME, addr));
+        let ap =
+            AccessPath::resource_access_path(*addr, T::struct_tag()).expect("access path in test");
+        let data_blob =
+            TStateView::get_state_value_bytes(&self.data_store, &StateKey::access_path(ap))
+                .expect("account must exist in data store")
+                .unwrap_or_else(|| panic!("Can't fetch {} resource for {}", T::STRUCT_NAME, addr));
         bcs::from_bytes(data_blob.as_slice()).ok()
     }
 
-    /// Reads the resource [`Value`] for an account under the given address from
+    /// Reads the resource `Value` for an account under the given address from
     /// this executor's data store.
     pub fn read_account_resource_at_address(
         &self,
@@ -318,10 +351,10 @@ impl FakeExecutor {
                 Some(aggregator) => {
                     let state_key = aggregator.state_key();
                     let value_bytes = self
-                        .read_state_value(&state_key)
+                        .read_state_value_bytes(&state_key)
                         .expect("aggregator value must exist in data store");
                     bcs::from_bytes(&value_bytes).unwrap()
-                }
+                },
                 None => o.integer.as_ref().unwrap().value,
             })
     }
@@ -372,7 +405,7 @@ impl FakeExecutor {
                     status
                 );
                 output
-            }
+            },
             TransactionStatus::Discard(status) => panic!("transaction discarded with {:?}", status),
             TransactionStatus::Retry => panic!("transaction status is retry"),
         }
@@ -382,7 +415,13 @@ impl FakeExecutor {
         &self,
         txn_block: Vec<Transaction>,
     ) -> Result<Vec<TransactionOutput>, VMStatus> {
-        BlockAptosVM::execute_block(txn_block, &self.data_store, usize::min(4, num_cpus::get()))
+        BlockAptosVM::execute_block(
+            self.executor_thread_pool.clone(),
+            BlockExecutorTransactions::Unsharded(txn_block),
+            &self.data_store,
+            usize::min(4, num_cpus::get()),
+            None,
+        )
     }
 
     pub fn execute_transaction_block(
@@ -402,7 +441,7 @@ impl FakeExecutor {
             }
         }
 
-        let output = AptosVM::execute_block(txn_block.clone(), &self.data_store);
+        let output = AptosVM::execute_block(txn_block.clone(), &self.data_store, None);
         if !self.no_parallel_exec {
             let parallel_output = self.execute_transaction_block_parallel(txn_block);
             assert_eq!(output, parallel_output);
@@ -421,7 +460,7 @@ impl FakeExecutor {
                         let output_seq = Self::trace(trace_output_dir.as_path(), res);
                         trace_map.2.push(output_seq);
                     }
-                }
+                },
                 Err(e) => {
                     let mut error_file = OpenOptions::new()
                         .write(true)
@@ -429,7 +468,7 @@ impl FakeExecutor {
                         .open(trace_dir.join(TRACE_FILE_ERROR))
                         .unwrap();
                     error_file.write_all(e.to_string().as_bytes()).unwrap();
-                }
+                },
             }
             let trace_meta_dir = trace_dir.join(TRACE_DIR_META);
             Self::trace(trace_meta_dir.as_path(), &trace_map);
@@ -462,14 +501,19 @@ impl FakeExecutor {
         seq
     }
 
+    pub fn read_state_value(&self, state_key: &StateKey) -> Option<StateValue> {
+        TStateView::get_state_value(&self.data_store, state_key).unwrap()
+    }
+
     /// Get the blob for the associated AccessPath
-    pub fn read_state_value(&self, state_key: &StateKey) -> Option<Vec<u8>> {
-        StateView::get_state_value(&self.data_store, state_key).unwrap()
+    pub fn read_state_value_bytes(&self, state_key: &StateKey) -> Option<Vec<u8>> {
+        TStateView::get_state_value_bytes(&self.data_store, state_key).unwrap()
     }
 
     /// Set the blob for the associated AccessPath
     pub fn write_state_value(&mut self, state_key: StateKey, data_blob: Vec<u8>) {
-        self.data_store.set(state_key, data_blob);
+        self.data_store
+            .set(state_key, StateValue::new_legacy(data_blob));
     }
 
     /// Verifies the given transaction by running it through the VM verifier.
@@ -496,14 +540,17 @@ impl FakeExecutor {
         self.new_block_with_metadata(proposer, vec![])
     }
 
-    pub fn new_block_with_metadata(
+    pub fn run_block_with_metadata(
         &mut self,
         proposer: AccountAddress,
         failed_proposer_indices: Vec<u32>,
-    ) {
+        txns: Vec<SignedTransaction>,
+    ) -> Vec<(TransactionStatus, u64)> {
+        let mut txn_block: Vec<Transaction> =
+            txns.into_iter().map(Transaction::UserTransaction).collect();
         let validator_set = ValidatorSet::fetch_config(&self.data_store.as_move_resolver())
             .expect("Unable to retrieve the validator set from storage");
-        let new_block = BlockMetadata::new(
+        let new_block_metadata = BlockMetadata::new(
             HashValue::zero(),
             0,
             0,
@@ -512,16 +559,33 @@ impl FakeExecutor {
             failed_proposer_indices,
             self.block_time,
         );
-        let output = self
-            .execute_transaction_block(vec![Transaction::BlockMetadata(new_block)])
-            .expect("Executing block prologue should succeed")
-            .pop()
-            .expect("Failed to get the execution result for Block Prologue");
-        // check if we emit the expected event, there might be more events for transaction fees
-        let event = output.events()[0].clone();
+        txn_block.insert(0, Transaction::BlockMetadata(new_block_metadata));
+
+        let outputs = self
+            .execute_transaction_block(txn_block)
+            .expect("Must execute transactions");
+
+        // Check if we emit the expected event for block metadata, there might be more events for transaction fees.
+        let event = outputs[0].events()[0].clone();
         assert_eq!(event.key(), &new_block_event_key());
         assert!(bcs::from_bytes::<NewBlockEvent>(event.event_data()).is_ok());
-        self.apply_write_set(output.write_set());
+
+        let mut results = vec![];
+        for output in outputs {
+            if !output.status().is_discarded() {
+                self.apply_write_set(output.write_set());
+            }
+            results.push((output.status().clone(), output.gas_used()));
+        }
+        results
+    }
+
+    pub fn new_block_with_metadata(
+        &mut self,
+        proposer: AccountAddress,
+        failed_proposer_indices: Vec<u32>,
+    ) {
+        self.run_block_with_metadata(proposer, failed_proposer_indices, vec![]);
     }
 
     fn module(name: &str) -> ModuleId {
@@ -552,18 +616,22 @@ impl FakeExecutor {
         args: Vec<Vec<u8>>,
     ) {
         let write_set = {
+            // FIXME: should probably read the timestamp from storage.
+            let timed_features =
+                TimedFeatures::enable_all().with_override_profile(TimedFeatureOverride::Testing);
             // TODO(Gas): we probably want to switch to non-zero costs in the future
             let vm = MoveVmExt::new(
                 NativeGasParameters::zeros(),
                 AbstractValueSizeGasParameters::zeros(),
                 LATEST_GAS_FEATURE_VERSION,
-                self.features
-                    .is_enabled(FeatureFlag::TREAT_FRIEND_AS_PRIVATE),
                 self.chain_id,
+                self.features.clone(),
+                timed_features,
             )
             .unwrap();
             let remote_view = StorageAdapter::new(&self.data_store);
-            let mut session = vm.new_session(&remote_view, SessionId::void());
+            let mut session =
+                vm.new_session(&remote_view, SessionId::void(), self.aggregator_enabled);
             session
                 .execute_function_bypass_visibility(
                     &Self::module(module_name),
@@ -580,13 +648,13 @@ impl FakeExecutor {
                         e.into_vm_status()
                     )
                 });
-            let session_out = session.finish().expect("Failed to generate txn effects");
-            // TODO: Support deltas in fake executor.
-            let (_, change_set) = session_out
-                .into_change_set(&mut (), LATEST_GAS_FEATURE_VERSION)
-                .expect("Failed to generate writeset")
-                .into_inner();
-            let (write_set, _events) = change_set.into_inner();
+            let change_set = session
+                .finish(
+                    &mut (),
+                    &ChangeSetConfigs::unlimited_at_gas_feature_version(LATEST_GAS_FEATURE_VERSION),
+                )
+                .expect("Failed to generate txn effects");
+            let (write_set, _delta_change_set, _events) = change_set.unpack();
             write_set
         };
         self.data_store.add_write_set(&write_set);
@@ -604,13 +672,14 @@ impl FakeExecutor {
             NativeGasParameters::zeros(),
             AbstractValueSizeGasParameters::zeros(),
             LATEST_GAS_FEATURE_VERSION,
-            self.features
-                .is_enabled(FeatureFlag::TREAT_FRIEND_AS_PRIVATE),
             self.chain_id,
+            self.features.clone(),
+            // FIXME: should probably read the timestamp from storage.
+            TimedFeatures::enable_all(),
         )
         .unwrap();
         let remote_view = StorageAdapter::new(&self.data_store);
-        let mut session = vm.new_session(&remote_view, SessionId::void());
+        let mut session = vm.new_session(&remote_view, SessionId::void(), self.aggregator_enabled);
         session
             .execute_function_bypass_visibility(
                 &Self::module(module_name),
@@ -620,13 +689,33 @@ impl FakeExecutor {
                 &mut UnmeteredGasMeter,
             )
             .map_err(|e| e.into_vm_status())?;
-        let session_out = session.finish().expect("Failed to generate txn effects");
+
+        let change_set = session
+            .finish(
+                &mut (),
+                &ChangeSetConfigs::unlimited_at_gas_feature_version(LATEST_GAS_FEATURE_VERSION),
+            )
+            .expect("Failed to generate txn effects");
         // TODO: Support deltas in fake executor.
-        let (_, change_set) = session_out
-            .into_change_set(&mut (), LATEST_GAS_FEATURE_VERSION)
-            .expect("Failed to generate writeset")
-            .into_inner();
-        let (writeset, _events) = change_set.into_inner();
-        Ok(writeset)
+        let (write_set, _delta_change_set, _events) = change_set.unpack();
+        Ok(write_set)
+    }
+
+    pub fn execute_view_function(
+        &mut self,
+        module_id: ModuleId,
+        func_name: Identifier,
+        type_args: Vec<TypeTag>,
+        arguments: Vec<Vec<u8>>,
+    ) -> Result<Vec<Vec<u8>>, Error> {
+        // No gas limit
+        AptosVM::execute_view_function(
+            self.get_state_view(),
+            module_id,
+            func_name,
+            type_args,
+            arguments,
+            u64::MAX,
+        )
     }
 }

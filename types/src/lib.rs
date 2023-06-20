@@ -1,4 +1,5 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 #![forbid(unsafe_code)]
@@ -14,6 +15,8 @@ pub mod contract_event;
 pub mod epoch_change;
 pub mod epoch_state;
 pub mod event;
+pub mod executable;
+pub mod fee_statement;
 pub mod governance;
 pub mod ledger_info;
 pub mod mempool_status;
@@ -49,6 +52,7 @@ pub use utility_coin::*;
 
 pub mod account_view;
 pub mod aggregate_signature;
+pub mod block_executor;
 pub mod state_store;
 #[cfg(test)]
 mod unit_tests;

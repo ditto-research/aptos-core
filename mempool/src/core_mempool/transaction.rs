@@ -1,15 +1,15 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::core_mempool::TXN_INDEX_ESTIMATED_BYTES;
+use crate::{core_mempool::TXN_INDEX_ESTIMATED_BYTES, counters};
 use aptos_crypto::HashValue;
-use aptos_types::{
-    account_address::AccountAddress, account_config::AccountSequenceInfo,
-    transaction::SignedTransaction,
-};
+use aptos_types::{account_address::AccountAddress, transaction::SignedTransaction};
 use serde::{Deserialize, Serialize};
-use std::mem::size_of;
-use std::time::{Duration, SystemTime};
+use std::{
+    mem::size_of,
+    time::{Duration, SystemTime},
+};
 
 /// Estimated per-txn size minus the raw transaction
 pub const TXN_FIXED_ESTIMATED_BYTES: usize = size_of::<MempoolTransaction>();
@@ -22,7 +22,8 @@ pub struct MempoolTransaction {
     pub ranking_score: u64,
     pub timeline_state: TimelineState,
     pub sequence_info: SequenceInfo,
-    pub insertion_time: SystemTime,
+    pub insertion_info: InsertionInfo,
+    pub was_parked: bool,
 }
 
 impl MempoolTransaction {
@@ -31,30 +32,36 @@ impl MempoolTransaction {
         expiration_time: Duration,
         ranking_score: u64,
         timeline_state: TimelineState,
-        seqno_type: AccountSequenceInfo,
+        seqno: u64,
         insertion_time: SystemTime,
+        client_submitted: bool,
     ) -> Self {
         Self {
             sequence_info: SequenceInfo {
                 transaction_sequence_number: txn.sequence_number(),
-                account_sequence_number_type: seqno_type,
+                account_sequence_number: seqno,
             },
             txn,
             expiration_time,
             ranking_score,
             timeline_state,
-            insertion_time,
+            insertion_info: InsertionInfo::new(insertion_time, client_submitted, timeline_state),
+            was_parked: false,
         }
     }
+
     pub(crate) fn get_sender(&self) -> AccountAddress {
         self.txn.sender()
     }
+
     pub(crate) fn get_gas_price(&self) -> u64 {
         self.txn.gas_unit_price()
     }
+
     pub(crate) fn get_committed_hash(&self) -> HashValue {
         self.txn.clone().committed_hash()
     }
+
     pub(crate) fn get_estimated_bytes(&self) -> usize {
         self.txn.raw_txn_bytes_len() + TXN_FIXED_ESTIMATED_BYTES + TXN_INDEX_ESTIMATED_BYTES
     }
@@ -75,20 +82,74 @@ pub enum TimelineState {
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct SequenceInfo {
     pub transaction_sequence_number: u64,
-    pub account_sequence_number_type: AccountSequenceInfo,
+    pub account_sequence_number: u64,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum SubmittedBy {
+    /// The transaction was received from a client REST API submission, rather than a mempool
+    /// broadcast. This can be used as the time a transaction first entered the network,
+    /// to measure end-to-end latency within the entire network. However, if a transaction is
+    /// submitted to multiple nodes (by the client) then the end-to-end latency measured will not
+    /// be accurate (the measured value will be lower than the correct value).
+    Client,
+    /// The transaction was received from a downstream peer, i.e., not a client or a peer validator.
+    /// At a validator, a transaction from downstream can be used as the time a transaction first
+    /// entered the validator network, to measure end-to-end latency within the validator network.
+    /// However, if a transaction enters via multiple validators (due to duplication outside of the
+    /// validator network) then the validator end-to-end latency measured will not be accurate
+    /// (the measured value will be lower than the correct value).
+    Downstream,
+    /// The transaction was received at a validator from another validator, rather than from the
+    /// downstream VFN. This transaction should not be used to measure end-to-end latency within the
+    /// validator network (see Downstream).
+    /// Note, with Quorum Store enabled, no transactions will be classified as PeerValidator.
+    PeerValidator,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct InsertionInfo {
+    pub insertion_time: SystemTime,
+    pub submitted_by: SubmittedBy,
+}
+
+impl InsertionInfo {
+    pub fn new(
+        insertion_time: SystemTime,
+        client_submitted: bool,
+        timeline_state: TimelineState,
+    ) -> Self {
+        let submitted_by = if client_submitted {
+            SubmittedBy::Client
+        } else if timeline_state == TimelineState::NonQualified {
+            SubmittedBy::PeerValidator
+        } else {
+            SubmittedBy::Downstream
+        };
+        Self {
+            insertion_time,
+            submitted_by,
+        }
+    }
+
+    pub fn submitted_by_label(&self) -> &'static str {
+        match self.submitted_by {
+            SubmittedBy::Client => counters::SUBMITTED_BY_CLIENT_LABEL,
+            SubmittedBy::Downstream => counters::SUBMITTED_BY_DOWNSTREAM_LABEL,
+            SubmittedBy::PeerValidator => counters::SUBMITTED_BY_PEER_VALIDATOR_LABEL,
+        }
+    }
 }
 
 #[cfg(test)]
 mod test {
     use crate::core_mempool::{MempoolTransaction, TimelineState};
-    use aptos_crypto::ed25519::Ed25519PrivateKey;
-    use aptos_crypto::PrivateKey;
-    use aptos_crypto::SigningKey;
-    use aptos_crypto::Uniform;
-    use aptos_types::account_address::AccountAddress;
-    use aptos_types::account_config::AccountSequenceInfo;
-    use aptos_types::chain_id::ChainId;
-    use aptos_types::transaction::{RawTransaction, Script, SignedTransaction, TransactionPayload};
+    use aptos_crypto::{ed25519::Ed25519PrivateKey, PrivateKey, SigningKey, Uniform};
+    use aptos_types::{
+        account_address::AccountAddress,
+        chain_id::ChainId,
+        transaction::{RawTransaction, Script, SignedTransaction, TransactionPayload},
+    };
     use std::time::{Duration, SystemTime};
 
     #[test]
@@ -107,8 +168,9 @@ mod test {
             Duration::from_secs(1),
             1,
             TimelineState::NotReady,
-            AccountSequenceInfo::Sequential(0),
+            0,
             SystemTime::now(),
+            false,
         )
     }
 

@@ -1,4 +1,5 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
@@ -7,7 +8,8 @@ use crate::{
         CHAIN_HEALTH_REPUTATION_PARTICIPATING_VOTING_POWER_FRACTION,
         CHAIN_HEALTH_TOTAL_NUM_VALIDATORS, CHAIN_HEALTH_TOTAL_VOTING_POWER,
         CHAIN_HEALTH_WINDOW_SIZES, COMMITTED_PROPOSALS_IN_WINDOW, COMMITTED_VOTES_IN_WINDOW,
-        FAILED_PROPOSALS_IN_WINDOW, LEADER_REPUTATION_ROUND_HISTORY_SIZE,
+        CONSENSUS_PARTICIPATION_STATUS, FAILED_PROPOSALS_IN_WINDOW,
+        LEADER_REPUTATION_ROUND_HISTORY_SIZE,
     },
     liveness::proposer_election::{choose_index, ProposerElection},
 };
@@ -17,17 +19,18 @@ use aptos_consensus_types::common::{Author, Round};
 use aptos_crypto::HashValue;
 use aptos_infallible::{Mutex, MutexGuard};
 use aptos_logger::prelude::*;
+use aptos_storage_interface::{DbReader, Order};
 use aptos_types::{
     account_config::{new_block_event_key, NewBlockEvent},
     epoch_change::EpochChangeProof,
     epoch_state::EpochState,
 };
 use std::{
+    cmp::max,
     collections::{HashMap, HashSet},
     convert::TryFrom,
     sync::Arc,
 };
-use storage_interface::{DbReader, Order};
 
 /// Interface to query committed NewBlockEvent.
 pub trait MetadataBackend: Send + Sync {
@@ -189,13 +192,13 @@ impl MetadataBackend for AptosDBBackend {
             match fresh_db_result {
                 Ok((events, _version, hit_end)) => {
                     self.get_from_db_result(target_epoch, target_round, &events, hit_end)
-                }
+                },
                 Err(e) => {
                     error!(
                         error = ?e, "[leader reputation] Fail to refresh window",
                     );
                     (vec![], HashValue::zero())
-                }
+                },
             }
         } else {
             self.get_from_db_result(target_epoch, target_round, events, hit_end)
@@ -376,7 +379,7 @@ impl NewBlockEventAggregation {
                             let count = map.entry(voter).or_insert(0);
                             *count += 1;
                         }
-                    }
+                    },
                     Err(msg) => {
                         error!(
                             "Voter conversion from bitmap failed at epoch {}, round {}: {}",
@@ -384,7 +387,7 @@ impl NewBlockEventAggregation {
                             meta.round(),
                             msg
                         )
-                    }
+                    },
                 }
                 map
             },
@@ -441,7 +444,7 @@ impl NewBlockEventAggregation {
                         let count = map.entry(failed_proposer).or_insert(0);
                         *count += 1;
                     }
-                }
+                },
                 Err(msg) => {
                     error!(
                         "Failed proposer conversion from indices failed at epoch {}, round {}: {}",
@@ -449,7 +452,7 @@ impl NewBlockEventAggregation {
                         meta.round(),
                         msg
                     )
-                }
+                },
             }
             map
         })
@@ -629,6 +632,21 @@ impl LeaderReputation {
                     .filter(|(c, _vp)| participants.contains(c))
                     .map(|(_c, vp)| *vp as f64)
                     .sum();
+
+                if counter_index == max(CHAIN_HEALTH_WINDOW_SIZES.len() - 2, 0) {
+                    // Only emit this for one window value. Currently defaults to 100
+                    candidates.iter().for_each(|x| {
+                        if participants.contains(x) {
+                            CONSENSUS_PARTICIPATION_STATUS
+                                .with_label_values(&[&x.to_string()])
+                                .set(1_i64)
+                        } else {
+                            CONSENSUS_PARTICIPATION_STATUS
+                                .with_label_values(&[&x.to_string()])
+                                .set(0_i64)
+                        }
+                    });
+                }
 
                 CHAIN_HEALTH_PARTICIPATING_VOTING_POWER[counter_index]
                     .set(participating_voting_power);

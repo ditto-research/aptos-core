@@ -1,4 +1,5 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{monitor, persistent_liveness_storage::PersistentLivenessStorage};
@@ -10,11 +11,11 @@ use aptos_consensus_types::{
 };
 use aptos_crypto::bls12381;
 use aptos_logger::prelude::info;
+use aptos_safety_rules::{ConsensusState, Error, TSafetyRules};
 use aptos_types::{
     epoch_change::EpochChangeProof,
     ledger_info::{LedgerInfo, LedgerInfoWithSignatures},
 };
-use safety_rules::{ConsensusState, Error, TSafetyRules};
 use std::sync::Arc;
 
 /// Wrap safety rules with counters.
@@ -56,7 +57,7 @@ impl MetricsSafetyRules {
                     waypoint_version = curr_version;
                     info!("Previous waypoint version {}, updated version {}, current epoch {}, provided epoch {}", prev_version, curr_version, current_epoch, provided_epoch);
                     continue;
-                }
+                },
                 result => return result,
             }
         }
@@ -73,7 +74,7 @@ impl MetricsSafetyRules {
             | Err(Error::WaypointOutOfDate(_, _, _, _)) => {
                 self.perform_initialize()?;
                 f(&mut self.inner)
-            }
+            },
             _ => result,
         }
     }
@@ -142,12 +143,12 @@ mod tests {
         vote_proposal::VoteProposal,
     };
     use aptos_crypto::bls12381;
+    use aptos_safety_rules::{ConsensusState, Error, TSafetyRules};
     use aptos_types::{
         epoch_change::EpochChangeProof,
         ledger_info::{LedgerInfo, LedgerInfoWithSignatures},
     };
     use claims::{assert_matches, assert_ok};
-    use safety_rules::{ConsensusState, Error, TSafetyRules};
 
     pub struct MockSafetyRules {
         // number of initialize() calls

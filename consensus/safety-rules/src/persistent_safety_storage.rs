@@ -1,4 +1,5 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
@@ -136,11 +137,11 @@ impl PersistentSafetyStorage {
             Ok(_) => {
                 self.cached_safety_data = Some(data);
                 Ok(())
-            }
+            },
             Err(error) => {
                 self.cached_safety_data = None;
                 Err(Error::SecureStorageUnexpectedError(error.to_string()))
-            }
+            },
         }
     }
 

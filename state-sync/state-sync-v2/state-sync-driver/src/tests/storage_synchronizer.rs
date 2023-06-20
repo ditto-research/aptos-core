@@ -1,4 +1,4 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
@@ -24,20 +24,20 @@ use crate::{
 use anyhow::format_err;
 use aptos_config::config::StateSyncDriverConfig;
 use aptos_data_streaming_service::data_notification::NotificationId;
+use aptos_event_notifications::EventSubscriptionService;
+use aptos_executor_types::ChunkCommitNotification;
 use aptos_infallible::{Mutex, RwLock};
+use aptos_mempool_notifications::MempoolNotificationListener;
+use aptos_storage_interface::DbReaderWriter;
 use aptos_types::{
     ledger_info::LedgerInfoWithSignatures,
     on_chain_config::ON_CHAIN_CONFIG_REGISTRY,
     transaction::{TransactionOutputListWithProof, Version},
 };
 use claims::assert_matches;
-use event_notifications::EventSubscriptionService;
-use executor_types::ChunkCommitNotification;
 use futures::StreamExt;
-use mempool_notifications::MempoolNotificationListener;
 use mockall::predicate::always;
 use std::{sync::Arc, time::Duration};
-use storage_interface::DbReaderWriter;
 use tokio::task::JoinHandle;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -451,7 +451,7 @@ async fn test_save_states_invalid_chunk() {
     );
 
     // Initialize the state synchronizer
-    let _ = storage_synchronizer
+    let _join_handle = storage_synchronizer
         .initialize_state_synchronizer(
             vec![create_epoch_ending_ledger_info()],
             create_epoch_ending_ledger_info(),
@@ -509,8 +509,11 @@ fn create_storage_synchronizer(
 
     // Create the mempool notification handler
     let (mempool_notification_sender, mempool_notification_listener) =
-        mempool_notifications::new_mempool_notifier_listener_pair();
-    let mempool_notification_handler = MempoolNotificationHandler::new(mempool_notification_sender);
+        aptos_mempool_notifications::new_mempool_notifier_listener_pair();
+    let mempool_notification_handler = MempoolNotificationHandler::new(
+        mempool_notification_sender,
+        StateSyncDriverConfig::default().mempool_commit_ack_timeout_ms,
+    );
 
     // Create the metadata storage
     let db_path = aptos_temppath::TempPath::new();

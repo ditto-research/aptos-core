@@ -1,18 +1,18 @@
-// Copyright (c) Aptos
+// Copyright © Aptos Foundation
+// Parts of the project are originally copyright © Meta Platforms, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::proof_of_store::ProofOfStore;
+use crate::proof_of_store::{BatchInfo, ProofOfStore};
 use aptos_crypto::HashValue;
+use aptos_executor_types::Error;
 use aptos_infallible::Mutex;
-use aptos_types::validator_verifier::ValidatorVerifier;
-use aptos_types::{account_address::AccountAddress, transaction::SignedTransaction};
-use executor_types::Error;
+use aptos_types::{
+    account_address::AccountAddress, transaction::SignedTransaction,
+    validator_verifier::ValidatorVerifier, vm_status::DiscardedVMStatus,
+};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
-use std::fmt;
-use std::fmt::Write;
-use std::sync::Arc;
+use std::{collections::HashSet, fmt, fmt::Write, sync::Arc};
 use tokio::sync::oneshot;
 
 /// The round of a block is a consensus-internal counter, which starts with 0 and increases
@@ -22,10 +22,19 @@ pub type Round = u64;
 /// Author refers to the author's account address
 pub type Author = AccountAddress;
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize, Hash, Ord, PartialOrd)]
 pub struct TransactionSummary {
     pub sender: AccountAddress,
     pub sequence_number: u64,
+}
+
+impl TransactionSummary {
+    pub fn new(sender: AccountAddress, sequence_number: u64) -> Self {
+        Self {
+            sender,
+            sequence_number,
+        }
+    }
 }
 
 impl fmt::Display for TransactionSummary {
@@ -34,11 +43,18 @@ impl fmt::Display for TransactionSummary {
     }
 }
 
+#[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
+pub struct TransactionInProgress {
+    pub summary: TransactionSummary,
+    pub gas_unit_price: u64,
+}
+
 #[derive(Clone)]
 pub struct RejectedTransactionSummary {
     pub sender: AccountAddress,
     pub sequence_number: u64,
     pub hash: HashValue,
+    pub reason: DiscardedVMStatus,
 }
 
 #[derive(Debug)]
@@ -98,7 +114,7 @@ impl Payload {
             Payload::InQuorumStore(proof_with_status) => proof_with_status
                 .proofs
                 .iter()
-                .map(|proof| proof.info().num_txns as usize)
+                .map(|proof| proof.num_txns() as usize)
                 .sum(),
         }
     }
@@ -125,7 +141,7 @@ impl Payload {
             Payload::InQuorumStore(proof_with_status) => proof_with_status
                 .proofs
                 .iter()
-                .map(|proof| proof.info().num_bytes as usize)
+                .map(|proof| proof.num_bytes() as usize)
                 .sum(),
         }
     }
@@ -142,7 +158,7 @@ impl Payload {
                     proof.verify(validator)?;
                 }
                 Ok(())
-            }
+            },
             (_, _) => Err(anyhow::anyhow!(
                 "Wrong payload type. Expected Payload::InQuorumStore {} got {} ",
                 quorum_store_enabled,
@@ -157,10 +173,10 @@ impl fmt::Display for Payload {
         match self {
             Payload::DirectMempool(txns) => {
                 write!(f, "InMemory txns: {}", txns.len())
-            }
+            },
             Payload::InQuorumStore(proof_with_status) => {
                 write!(f, "InMemory proofs: {}", proof_with_status.proofs.len())
-            }
+            },
         }
     }
 }
@@ -169,7 +185,7 @@ impl fmt::Display for Payload {
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
 pub enum PayloadFilter {
     DirectMempool(Vec<TransactionSummary>),
-    InQuorumStore(HashSet<HashValue>),
+    InQuorumStore(HashSet<BatchInfo>),
     Empty,
 }
 
@@ -198,7 +214,7 @@ impl From<&Vec<&Payload>> for PayloadFilter {
             for payload in exclude_payloads {
                 if let Payload::InQuorumStore(proof_with_status) = payload {
                     for proof in &proof_with_status.proofs {
-                        exclude_proofs.insert(*proof.digest());
+                        exclude_proofs.insert(proof.info().clone());
                     }
                 }
             }
@@ -216,17 +232,17 @@ impl fmt::Display for PayloadFilter {
                     write!(txns_str, "{} ", tx)?;
                 }
                 write!(f, "{}", txns_str)
-            }
+            },
             PayloadFilter::InQuorumStore(excluded_proofs) => {
                 let mut proofs_str = "".to_string();
                 for proof in excluded_proofs.iter() {
-                    write!(proofs_str, "{} ", proof)?;
+                    write!(proofs_str, "{} ", proof.digest())?;
                 }
                 write!(f, "{}", proofs_str)
-            }
+            },
             PayloadFilter::Empty => {
                 write!(f, "Empty filter")
-            }
+            },
         }
     }
 }

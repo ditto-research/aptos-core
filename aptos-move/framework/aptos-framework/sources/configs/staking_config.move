@@ -111,7 +111,7 @@ module aptos_framework::staking_config {
             error::invalid_argument(EZERO_REWARDS_RATE_DENOMINATOR),
         );
         assert!(
-            voting_power_increase_limit > 0 && voting_power_increase_limit <= 50,
+            voting_power_increase_limit > 0,
             error::invalid_argument(EINVALID_VOTING_POWER_INCREASE_LIMIT),
         );
 

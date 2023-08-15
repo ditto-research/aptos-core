@@ -549,6 +549,15 @@ module aptos_framework::delegation_pool {
         account::create_signer_with_capability(&pool.stake_pool_signer_cap)
     }
 
+    #[test_only]
+    /// Testing function to retrieves the shared resource account owning the stake pool in order
+    /// to relock the validator
+    public fun relock_validator(pool_address: address) acquires DelegationPool {
+        let pool = borrow_global<DelegationPool>(pool_address);
+        let owner_cap = account::create_signer_with_capability(&pool.stake_pool_signer_cap);
+        stake::increase_lockup(&owner_cap);
+    }
+
     /// Get the address of delegation pool reference `pool`.
     fun get_pool_address(pool: &DelegationPool): address {
         account::get_signer_capability_address(&pool.stake_pool_signer_cap)
